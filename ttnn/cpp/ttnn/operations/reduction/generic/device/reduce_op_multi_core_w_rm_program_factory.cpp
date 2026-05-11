@@ -198,6 +198,8 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWRmProgram
         wt_tiles_per_chunk,
         rm_rows_per_tile,
         ht_tiles_per_chunk,
+        // H_logical: only consumed by REDUCE_DIM == REDUCE_COL branch in the shared reader; 0 here.
+        0u,
     };
     TensorAccessorArgs(*src_buffer).append_to(reader_compile_time_args);
     tt_metal::Buffer* dst_buffer = output.buffer();
@@ -212,7 +214,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWRmProgram
 
     KernelDescriptor reader_desc;
     reader_desc.kernel_source =
-        "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/dataflow/reader_unary_reduce_rm_w.cpp";
+        "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/dataflow/reader_unary_reduce_rm.cpp";
     reader_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
     reader_desc.core_ranges = all_cores;
     reader_desc.compile_time_args = reader_compile_time_args;
@@ -238,7 +240,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWRmProgram
     };
 
     const std::string compute_kernel =
-        "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/reduce_rm_w.cpp";
+        "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/reduce_rm.cpp";
 
     KernelDescriptor compute_desc_g1;
     compute_desc_g1.kernel_source = compute_kernel;
