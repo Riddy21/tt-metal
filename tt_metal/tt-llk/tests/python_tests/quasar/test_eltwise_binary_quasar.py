@@ -199,5 +199,3 @@ def test_eltwise_binary(
         print_errors=True,
         print_pcc=True,
     ), "Assert against golden failed"
-
-    assert test_passed, "Assert against golden failed"
