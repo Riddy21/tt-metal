@@ -936,10 +936,10 @@ inline void send_init_semaphore_to_configured_targets(
         if (device_idx == LinearizedSrcMeshCoord) {
             continue;
         } else if (is_configured_target<LinearizedSrcMeshCoord, MeshRows, MeshCols, Axis>(device_idx)) {
-            // FABRIC_2D: the _1d helper type-puns the packet header to LowLatencyPacketHeader*,
-            // but under FABRIC_2D PACKET_HEADER_TYPE is HybridMeshPacketHeader — different layout.
-            // Force the 2D variant when FABRIC_2D is active, regardless of CCL Topology
-            // (Topology::Linear is the data-flow semantics; fabric mode is the hardware reality).
+            // FABRIC_2D: the _1d helper can unsafely cast the packet header to LowLatencyPacketHeader*,
+            // but for 2D the PACKET_HEADER_TYPE should then be HybridMeshPacketHeader.
+            // We force the 2D variant when FABRIC_2D is active, regardless of CCL Topology
+            // (The problematic case is when we open 2D fabric but then call a CCL with e.g. Topology::Linear on it).
 #if defined(ROUTING_MODE) && ((ROUTING_MODE & ROUTING_MODE_2D) != 0)
             const auto& dest_chip_id = dest_chip_ids[device_idx];
             const auto& dest_mesh_id = dest_mesh_ids[device_idx];
