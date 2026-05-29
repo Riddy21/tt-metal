@@ -1,0 +1,17 @@
+# Minimal tt-train health checks for post-commit / merge gate (~10 min budget).
+# For max allowed timeout refer to .github/time_budget.yaml
+
+- name: tt-train cpp sanity
+  cmd: |
+    cd /work/build/tt-train
+    mkdir -p generated/test_reports
+    ldd tests/ttml_tests || true
+    python3 /work/tools/tt-power-sidecar/tt_power_sidecar.py \
+      --backend sysfs \
+      --out /work/power_report.json \
+      -- ctest -E NIGHTLY --no-tests=error --output-on-failure --output-junit generated/test_reports/ctest_report.xml
+  skus:
+    wh_n300_civ2:
+      timeout: 10
+  team: tt_train
+  owner_id: U05ACKAJTHS # placeholder — update to tt-train owner

@@ -237,3 +237,12 @@ models:
 umd:
   unit:
     wh_galaxy_perf: 35
+
+tt_train:
+  sanity:
+    wh_n300_civ2: 10
+  unit:
+    wh_n150_civ2: 430
+    wh_n300_civ2: 430
+    bh_p100a_civ2_viommu: 430
+    bh_p150b_civ2: 430

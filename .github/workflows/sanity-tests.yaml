@@ -33,11 +33,11 @@ on:
         type: boolean
         default: true
         description: "Run model unit tests"
-      run-tt-train-cpp-unit-tests:
+      run-tt-train-sanity-tests:
         required: false
         type: boolean
         default: true
-        description: "Run TT-Train C++ unit tests"
+        description: "Run TT-Train sanity tests"
       run-profiler-tests:
         required: false
         type: boolean
@@ -138,11 +138,11 @@ on:
         default: true
         type: boolean
         description: "Run model unit tests"
-      run-tt-train-cpp-unit-tests:
+      run-tt-train-sanity-tests:
         required: false
         default: true
         type: boolean
-        description: "Run TT-Train C++ unit tests"
+        description: "Run TT-Train sanity tests"
       run-profiler-tests:
         required: false
         default: true
@@ -263,7 +263,7 @@ jobs:
     outputs:
       ttnn-unit-tests: ${{ steps.set-ttnn-unit-tests.outputs.should-run }}
       models-unit-tests: ${{ steps.set-models-unit-tests.outputs.should-run }}
-      tt-train-cpp-unit-tests: ${{ steps.set-tt-train-cpp-unit-tests.outputs.should-run }}
+      tt-train-sanity-tests: ${{ steps.set-tt-train-sanity-tests.outputs.should-run }}
       run-profiler-tests: ${{ steps.set-run-profiler-tests.outputs.should-run }}
       t3000-apc-fast-tests: ${{ steps.set-t3000-apc-fast-tests.outputs.should-run }}
       ops-unit-tests: ${{ steps.set-ops-unit-tests.outputs.should-run }}
@@ -275,9 +275,9 @@ jobs:
       - id: set-models-unit-tests
         run: |
           echo "should-run=${{ github.event_name == 'push' || inputs.run-models-unit-tests }}" >> "$GITHUB_OUTPUT"
-      - id: set-tt-train-cpp-unit-tests
+      - id: set-tt-train-sanity-tests
         run: |
-          echo "should-run=${{ github.event_name == 'push' || inputs.run-tt-train-cpp-unit-tests }}" >> "$GITHUB_OUTPUT"
+          echo "should-run=${{ github.event_name == 'push' || inputs.run-tt-train-sanity-tests }}" >> "$GITHUB_OUTPUT"
       - id: set-run-profiler-tests
         run: |
           echo "should-run=${{ github.event_name == 'push' || inputs.run-profiler-tests }}" >> "$GITHUB_OUTPUT"
@@ -330,23 +330,15 @@ jobs:
       ref: ${{ inputs.ref || github.sha }}
       timeout: ${{ inputs.enable-watcher && 120 || 35 }}
 
-  tt-train-cpp-unit-tests:
+  tt-train-sanity-tests:
     needs: [resolve-artifacts, tests-to-run]
     secrets: inherit
-    strategy:
-      fail-fast: false
-      matrix:
-        test-group: [
-          { arch: wormhole_b0, runner-label: N300 },
-        ]
-    if: ${{ !cancelled() && needs.resolve-artifacts.result == 'success' && needs.tests-to-run.outputs.tt-train-cpp-unit-tests == 'true' }}
-    uses: ./.github/workflows/tt-train-post-commit.yaml
+    if: ${{ !cancelled() && needs.resolve-artifacts.result == 'success' && needs.tests-to-run.outputs.tt-train-sanity-tests == 'true' }}
+    uses: ./.github/workflows/tt-train-sanity-tests.yaml
     with:
-      arch: ${{ matrix.test-group.arch }}
-      runner-label: ${{ matrix.test-group.runner-label }}
+      enabled-skus: "wh_n300_civ2"
       docker-image: ${{ needs.resolve-artifacts.outputs.dev-docker-image }}
       build-artifact-name: ${{ needs.resolve-artifacts.outputs.build-artifact-name }}
-      gtest_filter: "*-*NIGHTLY_*"
       enable-watcher: ${{ inputs.enable-watcher || false }}
       enable-lightweight-kernel-asserts: ${{ inputs.enable-lightweight-kernel-asserts || false }}
       enable-llk-asserts: ${{ inputs.enable-llk-asserts || false }}

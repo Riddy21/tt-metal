@@ -1,0 +1,79 @@
+# Comprehensive tt-train tests for nightly CI.
+# For max allowed timeout refer to .github/time_budget.yaml
+
+- name: tt-train cpp unit
+  cmd: |
+    cd /work/build/tt-train
+    mkdir -p generated/test_reports
+    ldd tests/ttml_tests || true
+    python3 /work/tools/tt-power-sidecar/tt_power_sidecar.py \
+      --backend sysfs \
+      --out /work/power_report.json \
+      -- ctest -E NIGHTLY --no-tests=error --output-on-failure --output-junit generated/test_reports/ctest_report.xml
+  skus:
+    wh_n150_civ2:
+      timeout: 90
+    wh_n300_civ2:
+      timeout: 90
+    bh_p100a_civ2_viommu:
+      timeout: 90
+    bh_p150b_civ2:
+      timeout: 90
+  team: tt_train
+  owner_id: U05ACKAJTHS
+
+- name: tt-train python unit
+  requires_wheel: true
+  cmd: |
+    cd /work/tt-train
+    python3 /work/tools/tt-power-sidecar/tt_power_sidecar.py \
+      --backend sysfs \
+      --out /work/power_report.json \
+      -- python -m pytest tests/python
+  skus:
+    wh_n150_civ2:
+      timeout: 10
+    wh_n300_civ2:
+      timeout: 10
+    bh_p100a_civ2_viommu:
+      timeout: 10
+    bh_p150b_civ2:
+      timeout: 10
+  team: tt_train
+  owner_id: U05ACKAJTHS
+
+- name: tt-train nightly cpp
+  cmd: |
+    cd /work/build/tt-train
+    mkdir -p generated/test_reports
+    python3 /work/tools/tt-power-sidecar/tt_power_sidecar.py \
+      --backend sysfs \
+      --out /work/power_report.json \
+      -- ./tests/ttml_tests --gtest_filter='*NIGHTLY_*'
+  skus:
+    wh_n150_civ2:
+      timeout: 90
+    wh_n300_civ2:
+      timeout: 90
+    bh_p100a_civ2_viommu:
+      timeout: 90
+    bh_p150b_civ2:
+      timeout: 90
+  team: tt_train
+  owner_id: U05ACKAJTHS
+
+- name: tt-train run models
+  requires_wheel: true
+  upload_metrics: true
+  cmd: python tt-train/scripts/run_models.py; ls -l
+  skus:
+    wh_n150_civ2:
+      timeout: 240
+    wh_n300_civ2:
+      timeout: 240
+    bh_p100a_civ2_viommu:
+      timeout: 240
+    bh_p150b_civ2:
+      timeout: 240
+  team: tt_train
+  owner_id: U05ACKAJTHS
