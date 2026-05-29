@@ -39,42 +39,17 @@ FORCE_INLINE auto local_noc_addr(uint32_t addr, uint8_t noc_id = noc_index) {
 }
 
 /**
- * @brief Zero out the exact tile size for a DFB using NOC reads from the hardware zeros region
- *
- * @tparam dfb_id DataflowBuffer ID whose tile byte size should be used
- * @param write_addr L1 address where the zeroed tile should be written
- */
- // todo bob
-template <uint32_t dfb_id>
-FORCE_INLINE void zero_tile(uint32_t write_addr) {
-    constexpr uint32_t bytes_to_zero = get_tile_size(dfb_id);
-    static_assert(bytes_to_zero % MEM_ZEROS_SIZE == 0, "DFB entry size must be a multiple of MEM_ZEROS_SIZE");
-    constexpr uint32_t num_zeros_reads = bytes_to_zero / MEM_ZEROS_SIZE;
-
-    Noc noc;
-    UnicastEndpoint ep;
-    const auto zeros_src = local_noc_addr(MEM_ZEROS_BASE, noc.get_noc_id());
-
-    noc.set_async_read_state<Noc::VcSelection::DEFAULT, MEM_ZEROS_SIZE>(ep, MEM_ZEROS_SIZE, zeros_src);
-
-    for (uint32_t i = 0; i < num_zeros_reads; ++i) {
-        noc.async_read_with_state<Noc::VcSelection::DEFAULT, 1>(
-            ep, ::CoreLocalMem<uint32_t>(write_addr), 0, zeros_src, {});
-        write_addr += MEM_ZEROS_SIZE;
-    }
-    noc.async_read_barrier();
-}
-
-/**
  * @brief Reserve, zero-fill, and push one tile into a DataflowBuffer
  *
  * @tparam dfb_id DataflowBuffer ID whose tile byte size should be used
  */
 template <uint32_t dfb_id>
 FORCE_INLINE void prepare_zero_tile() {
+    Noc noc;
     ::DataflowBuffer dfb(dfb_id);
     dfb.reserve_back(1);
-    zero_tile<dfb_id>(dfb.get_write_ptr());
+    noc.async_write_zeros(dfb, get_tile_size(dfb_id));
+    noc.write_zeros_l1_barrier();
     dfb.push_back(1);
 }
 
