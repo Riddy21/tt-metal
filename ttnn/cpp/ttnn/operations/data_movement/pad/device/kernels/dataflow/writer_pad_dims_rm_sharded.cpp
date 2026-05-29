@@ -30,7 +30,7 @@ inline __attribute__((always_inline)) void fill_pad_cb_with_zero(
     const uint32_t cb_id, const uint32_t num_bytes_risc, uint32_t num_noc_transfer) {
     Noc noc;
     CircularBuffer cb(cb_id);
-    noc.write_zeros(cb, num_bytes_risc * num_noc_transfer);
+    noc.async_write_zeros(cb, num_bytes_risc * num_noc_transfer);
     noc.write_zeros_l1_barrier();
 }
 

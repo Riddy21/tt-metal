@@ -45,7 +45,8 @@ void read_data(
         Noc noc;
         CircularBuffer cb(cb_id);
         const uint32_t cb_base = get_write_ptr(cb_id);
-        noc.write_zeros(cb, input_page_size / 2, {.offset_bytes = (l1_write_addr - cb_base) + input_page_size / 2});
+        noc.async_write_zeros(
+            cb, input_page_size / 2, {.offset_bytes = (l1_write_addr - cb_base) + input_page_size / 2});
         l1_write_addr += input_page_size;
         return;
     }
