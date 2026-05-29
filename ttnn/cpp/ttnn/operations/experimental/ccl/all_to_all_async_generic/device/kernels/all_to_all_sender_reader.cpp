@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/circular_buffer.h"
 #include "ckernel.h"
 #include <cstdint>
 
@@ -27,6 +28,7 @@ template <typename AddrGenType>
 void read_data(
     uint32_t device_id,
     uint32_t tile_id,
+    uint32_t cb_id,
     uint32_t& l1_write_addr,
     AddrGenType input_addrgen,
     uint32_t c,
@@ -39,8 +41,11 @@ void read_data(
             input_addrgen.get_noc_addr(tile_id, (device_id % 2) * input_page_size / 2),
             l1_write_addr,
             input_page_size / 2);
-        uint64_t zeros_noc_addr = get_noc_addr(MEM_ZEROS_BASE);
-        noc_async_read(zeros_noc_addr, l1_write_addr + input_page_size / 2, input_page_size / 2);
+        // Zero-fill the second half of the tile within the CB.
+        Noc noc;
+        CircularBuffer cb(cb_id);
+        const uint32_t cb_base = get_write_ptr(cb_id);
+        noc.write_zeros(cb, input_page_size / 2, {.offset_bytes = (l1_write_addr - cb_base) + input_page_size / 2});
         l1_write_addr += input_page_size;
         return;
     }
@@ -130,6 +135,7 @@ void kernel_main() {
             read_data(
                 device_id,
                 tile_id,
+                cb0_id,
                 l1_write_addr,
                 input_addrgen,
                 concat_idx,

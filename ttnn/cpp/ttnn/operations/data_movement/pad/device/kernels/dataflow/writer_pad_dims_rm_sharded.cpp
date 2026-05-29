@@ -28,16 +28,10 @@ inline __attribute__((always_inline)) void fill_pad_cb_with_val(
 
 inline __attribute__((always_inline)) void fill_pad_cb_with_zero(
     const uint32_t cb_id, const uint32_t num_bytes_risc, uint32_t num_noc_transfer) {
+    Noc noc;
     CircularBuffer cb(cb_id);
-    uint64_t zeros_noc_addr = get_noc_addr(MEM_ZEROS_BASE);
-    uint32_t pad_val_addr = cb.get_write_ptr();
-    uint32_t l1_write_addr = pad_val_addr;
-
-    for (uint32_t i = 0; i < num_noc_transfer; ++i) {
-        noc_async_read(zeros_noc_addr, l1_write_addr, num_bytes_risc);
-        l1_write_addr += num_bytes_risc;
-    }
-    noc_async_read_barrier();
+    noc.write_zeros(cb, num_bytes_risc * num_noc_transfer);
+    noc.write_zeros_l1_barrier();
 }
 
 void kernel_main() {

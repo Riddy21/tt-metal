@@ -94,8 +94,6 @@ void kernel_main() {
 
     const auto s = TensorAccessor(src_args, src_addr);
 
-    uint64_t zeros_noc_addr = get_noc_addr(MEM_ZEROS_BASE);
-
     uint64_t pad_val_addr = cb_pad_exp.get_read_ptr();
     uint64_t pad_val_noc_addr = get_noc_addr(pad_val_addr);
 
