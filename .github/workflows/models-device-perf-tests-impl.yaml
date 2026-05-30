@@ -98,7 +98,7 @@ jobs:
         - /dev/hugepages-1G:/dev/hugepages-1G
         # bh_p150 / bh_loudbox / bh_galaxy[_perf] and the WH SKUs run on machines
         # that host the canonical HF / tt_cache layout under /mnt/MLPerf, so the
-        # standard mount works as-is. bh_quietbox_2 is a YYZ4 Exabox BH runner
+        # standard mount works as-is. bh_quietbox_2 uses QB2's in YYZ4 with a NFS mount
         # whose equivalent layout lives at /mnt/models/huggingface
         # — map that host path onto /mnt/MLPerf/huggingface inside the container
         # so a single test cmd referencing /mnt/MLPerf/... resolves on both
