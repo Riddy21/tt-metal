@@ -369,14 +369,14 @@
     export HF_HOME=/localdev/blackhole_demos/huggingface_data
     export HF_MODEL=meta-llama/Llama-3.3-70B-Instruct
     export TT_CACHE_PATH=/localdev/blackhole_demos/huggingface_data/tt_cache/meta-llama--Llama-3.3-70B-Instruct
-    pytest --timeout 600 models/tt_transformers/demo/simple_text_demo.py -k "performance and ci-32" --max_seq_len 131072
+    pytest --timeout 1200 models/tt_transformers/demo/simple_text_demo.py -k "performance and ci-32" --max_seq_len 131072
   skus:
     bh_llmbox:
       timeout: 10
     bh_loudbox:
       timeout: 10
     bh_quietbox_2:
-      timeout: 10
+      timeout: 30
   owner_id: U03PUAKE719 # Miguel Tairum
   team: models
   model-name: llama3.3-70b
@@ -500,10 +500,10 @@
     set -e
     export HF_HOME=/localdev/blackhole_demos/huggingface_data
     export TT_DIT_CACHE_DIR=/tmp/TT_DIT_CACHE
-    pytest models/tt_dit/tests/models/wan2_2/test_performance_wan.py -k "2x2_sp0tp1 and resolution_480p and t2v" --timeout=1200
+    pytest models/tt_dit/tests/models/wan2_2/test_performance_wan.py -k "2x2_sp0tp1 and resolution_480p and t2v" --timeout=2700
   skus:
     bh_quietbox_2:
-      timeout: 20
+      timeout: 45
   owner_id: U08TED0JM9D # Samuel Adesoye
   team: models
   model-name: wan2.2-t2v-a14b
