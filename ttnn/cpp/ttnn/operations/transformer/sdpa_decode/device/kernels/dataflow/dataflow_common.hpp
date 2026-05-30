@@ -24,7 +24,7 @@
  *                   Generic Tile Manipulation Functions                       *
  ******************************************************************************/
 template <uint32_t tile_bytes>
-void fill_tile(const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t val) {
+void fill_tile(Noc noc, uint32_t cb_id, uint32_t tile_id, uint32_t val) {
     if (val == 0) {
         constexpr uint32_t num_zeros_reads = tile_bytes / MEM_ZEROS_SIZE;
         const uint8_t noc_id = noc.get_noc_id();
@@ -56,8 +56,7 @@ void fill_tile(const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t val) {
 }
 
 template <uint32_t tile_bytes>
-void fill_tile_partial(
-    const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t cur_pos_in_tile, uint32_t partial_val) {
+void fill_tile_partial(Noc noc, uint32_t cb_id, uint32_t tile_id, uint32_t cur_pos_in_tile, uint32_t partial_val) {
     /*
     We want to fill cur_pos_in_tile + 1 to the end
     */
@@ -114,7 +113,7 @@ void fill_tile_partial(
 
 template <uint32_t tile_bytes>
 void fill_tile_partial_sliding_window(
-    const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t window_start_pos_in_tile, uint32_t partial_val) {
+    Noc noc, uint32_t cb_id, uint32_t tile_id, uint32_t window_start_pos_in_tile, uint32_t partial_val) {
     /*
     For sliding window mask: fill positions 0 to window_start_pos_in_tile - 1 with partial_val (-inf)
     This is the inverse of fill_tile_partial which fills from cur_pos_in_tile + 1 to end
@@ -188,7 +187,7 @@ template <
     uint32_t PNHt,
     typename MaskReaderType>
 uint32_t read_mask_chunk(
-    const Noc& noc,
+    Noc noc,
     uint32_t PSt,
     uint32_t Sk_chunk_t,
     uint32_t mask_chunk_tiles,
@@ -223,7 +222,7 @@ uint32_t read_mask_chunk(
 }
 
 template <uint32_t cb_mask_in, uint32_t PNHt>
-void generate_mask(const Noc& noc, uint32_t k_num_chunks, uint32_t Sk_chunk_t, uint32_t cur_pos) {
+void generate_mask(Noc noc, uint32_t k_num_chunks, uint32_t Sk_chunk_t, uint32_t cur_pos) {
     /*
     example 1: 64 seqlen at cur_pos 40, 2 cores, 32 chunk size
     k_num_chunks = 2
@@ -315,7 +314,7 @@ void generate_mask(const Noc& noc, uint32_t k_num_chunks, uint32_t Sk_chunk_t, u
 }
 
 template <uint32_t cb_mask_in, uint32_t PNHt>
-void generate_sliding_window_mask(const Noc& noc, uint32_t k_num_chunks, uint32_t Sk_chunk_t, uint32_t window_start) {
+void generate_sliding_window_mask(Noc noc, uint32_t k_num_chunks, uint32_t Sk_chunk_t, uint32_t window_start) {
     /*
     Generate sliding window mask for the first chunk:
     - Mask positions < window_start with -inf (sliding window start)
@@ -385,7 +384,7 @@ void generate_sliding_window_mask(const Noc& noc, uint32_t k_num_chunks, uint32_
  * This mask is pushed once and reused (without popping) by the compute kernel for every K chunk.
  */
 template <uint32_t cb_block_pad_mask, uint32_t PNHt>
-void generate_block_padding_mask(const Noc& noc, uint32_t Sk_chunk_t, uint32_t block_size) {
+void generate_block_padding_mask(Noc noc, uint32_t Sk_chunk_t, uint32_t block_size) {
     uint32_t total_tiles = PNHt * Sk_chunk_t;
     constexpr uint32_t tile_bytes = get_tile_size(cb_block_pad_mask);
     constexpr uint32_t NEG_INF = 0xFF80FF80;
@@ -414,8 +413,7 @@ void generate_block_padding_mask(const Noc& noc, uint32_t Sk_chunk_t, uint32_t b
  *                   Writer Kernel Specific Functions                         *
  ******************************************************************************/
 template <uint32_t cb_out, uint32_t out_chunk_tiles, uint32_t barrier_threshold, typename WriterType>
-uint32_t write_tiles_to_memory(
-    const Noc& noc, uint32_t& out_tile_id, const WriterType& out_writer, uint32_t& barrier_count) {
+uint32_t write_tiles_to_memory(Noc noc, uint32_t& out_tile_id, const WriterType& out_writer, uint32_t& barrier_count) {
     constexpr uint32_t tile_bytes = get_tile_size(cb_out);
     CircularBuffer cb(cb_out);
     uint32_t l1_read_addr = cb.get_read_ptr();
@@ -433,7 +431,7 @@ uint32_t write_tiles_to_memory(
 
 template <uint32_t cb_out, uint32_t ELEMENT_SIZE, uint32_t barrier_threshold, uint32_t PNHt, typename WriterType>
 uint32_t write_partial_tiles_to_memory(
-    const Noc& noc,
+    Noc noc,
     uint32_t& out_tile_id,  // base tile index in DRAM for this batch
     const WriterType& out_writer,
     uint32_t& barrier_count,
@@ -505,7 +503,7 @@ template <
     uint32_t barrier_threshold,
     typename QArgsType>
 void read_q(
-    const Noc& noc,
+    Noc noc,
     bool q_locally_available,
     bool is_output_core,
     uint32_t q_addr,
@@ -621,7 +619,7 @@ template <
     uint32_t capacity_t,
     typename KReaderType>
 uint32_t read_k(
-    const Noc& noc,
+    Noc noc,
     uint32_t k_chunk_tiles,
     uint32_t cur_head,
     uint32_t Sk_chunk_t_dynamic,
@@ -752,7 +750,7 @@ template <
     uint32_t capacity_t,
     typename VReaderType>
 void read_v(
-    const Noc& noc,
+    Noc noc,
     uint32_t v_chunk_tiles,
     uint32_t cur_head,
     uint32_t Sk_chunk_t_dynamic,
@@ -833,7 +831,7 @@ template <
     typename VReaderType,
     typename MaskReaderType>
 void read_kv_mask_chunks(
-    const Noc& noc,
+    Noc noc,
     uint32_t k_chunk_start,
     uint32_t k_chunk_end,
     uint32_t k_start_tile_id,

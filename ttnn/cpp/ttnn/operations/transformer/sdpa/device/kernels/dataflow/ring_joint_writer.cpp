@@ -32,7 +32,7 @@
 // @param stats_tile_bytes    Stats tile size in bytes
 template <typename CatAddrGeneratorType, typename TensorAccessorType, typename StatsShapeType>
 void read_prev_output_and_lse(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_out_generator,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,
@@ -69,7 +69,7 @@ void read_prev_output_and_lse(
 
 template <typename TensorAccessorType, typename StatsShapeType>
 static __attribute__((noinline, noclone)) void issue_stats_column_reads(
-    const Noc& noc,
+    Noc noc,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,
     const uint32_t nb,
@@ -93,7 +93,7 @@ static __attribute__((noinline, noclone)) void issue_stats_column_reads(
 
 template <typename TensorAccessorType, typename StatsShapeType>
 static __attribute__((noinline, noclone)) void issue_stats_column_writes(
-    const Noc& noc,
+    Noc noc,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,
     const uint32_t nb,
@@ -119,7 +119,7 @@ static __attribute__((noinline, noclone)) void issue_stats_column_writes(
 // while Q[q]'s K-loop runs, hiding DRAM read latency behind compute.
 template <typename CatAddrGeneratorType, typename TensorAccessorType, typename StatsShapeType>
 void issue_restore_reads(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_out_generator,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,
@@ -189,7 +189,7 @@ void issue_restore_reads(
 
 // Complete a previously issued restore — single barrier for all 3 CBs, then push.
 void complete_restore(
-    const Noc& noc,
+    Noc noc,
     const uint32_t cb_prev_out,
     const uint32_t out_num_tiles,
     const uint32_t cb_max_in,
@@ -220,7 +220,7 @@ template <
     typename TensorAccessorType,
     typename StatsShapeType>
 void save_accumulators_with_trid(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_out_generator,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,
@@ -304,7 +304,7 @@ void save_accumulators_with_trid(
 // @param stats_tile_bytes    Stats tile size in bytes
 template <typename CatAddrGeneratorType, typename TensorAccessorType, typename StatsShapeType>
 void write_output_and_lse(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_out_generator,
     const TensorAccessorType& stats_writer,
     const StatsShapeType& stats_tile_logical,

@@ -16,7 +16,7 @@
 
 #if defined(WATCHER_OVERHEAD_OK)
 template <bool is_output_cb, bool is_wr_ptr>
-void dprint_cb_tile(const Noc& noc, uint32_t cb_id, uint32_t tile_id) {
+void dprint_cb_tile(Noc noc, uint32_t cb_id, uint32_t tile_id) {
     noc.async_read_barrier();
     noc.async_write_barrier();
     for (uint8_t i = 0; i < 32; ++i) {

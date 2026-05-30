@@ -16,7 +16,7 @@
 // cb_reserve_back / cb_push_back. Single read barrier at end for lower latency.
 template <uint32_t tile_bytes, bool transpose, typename ReaderType>
 FORCE_INLINE void read_chunk_for_forwarding(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     const uint32_t dst_addr,
     uint32_t start_tile_id,

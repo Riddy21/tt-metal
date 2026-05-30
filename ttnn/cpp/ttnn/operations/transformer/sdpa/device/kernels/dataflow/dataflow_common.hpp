@@ -21,7 +21,7 @@ constexpr uint32_t get_barrier_read_threshold() {
     return ((512 / num_readers) * (1024 + 128)) / tile_bytes;
 }
 
-void fill_zeros_async(const Noc& noc, uint32_t write_addr, uint32_t tile_bytes) {
+void fill_zeros_async(Noc noc, uint32_t write_addr, uint32_t tile_bytes) {
     const uint8_t noc_id = noc.get_noc_id();
     const uint32_t my_noc_x = my_x[noc_id];
     const uint32_t my_noc_y = my_y[noc_id];
@@ -45,7 +45,7 @@ void fill_zeros_async(const Noc& noc, uint32_t write_addr, uint32_t tile_bytes) 
 }
 
 template <uint32_t tile_bytes, bool wait_for_barrier = true>
-void fill_tile_zeros(const Noc& noc, uint32_t cb_id, uint32_t tile_id) {
+void fill_tile_zeros(Noc noc, uint32_t cb_id, uint32_t tile_id) {
     static_assert(tile_bytes % 4 == 0, "tile_bytes must be a multiple of 4");
 
     CircularBuffer cb(cb_id);
@@ -82,7 +82,7 @@ uint32_t virtual_seq_tile_id_to_physical_tile_id(
 
 template <typename PageTableArgs>
 volatile tt_l1_ptr uint32_t* read_page_table_for_batch(
-    const Noc& noc,
+    Noc noc,
     uint32_t cb_id,
     uint32_t batch_idx,
     const PageTableArgs& page_table_args,
@@ -146,7 +146,7 @@ public:
 
 template <uint32_t tile_bytes, typename ReaderType, bool push_num_tiles = true>
 uint32_t read_chunk_with_padding(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     const uint32_t cb_id,
     uint32_t start_tile_id,
@@ -213,7 +213,7 @@ uint32_t read_chunk_with_padding(
 // Used for interleaved Q subblock push to overlap Q reads with compute.
 template <uint32_t tile_bytes, typename ReaderType>
 FORCE_INLINE void read_q_subblock(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     const uint32_t cb_id,
     uint32_t& start_tile_id,
@@ -260,7 +260,7 @@ FORCE_INLINE void read_q_subblock(
 
 template <uint32_t num_heads, uint32_t block_size_t, uint32_t Wt, typename ReaderType>
 void read_paged_chunk_with_padding(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     const uint32_t cb_id,
     const uint32_t cur_head,
@@ -319,7 +319,7 @@ void read_paged_chunk_with_padding(
 
 template <uint32_t tile_bytes>
 void copy_tile(
-    const Noc& noc, uint32_t src_l1_addr_base, uint32_t dst_l1_addr_base, uint32_t src_tile_id, uint32_t dst_tile_id) {
+    Noc noc, uint32_t src_l1_addr_base, uint32_t dst_l1_addr_base, uint32_t src_tile_id, uint32_t dst_tile_id) {
     const uint8_t noc_id = noc.get_noc_id();
     UnicastEndpoint src;
     noc.async_read(
@@ -372,7 +372,7 @@ void fill_neginf_tile(uint32_t cb_id, uint32_t tile_id) {
  * Within each uint32 word: low 16 bits = even column, high 16 bits = odd column.
  */
 template <uint32_t tile_bytes>
-void fill_vertical_tile_bf16(const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t unpad_col_in_tile) {
+void fill_vertical_tile_bf16(Noc noc, uint32_t cb_id, uint32_t tile_id, uint32_t unpad_col_in_tile) {
     // Start with all zeros (valid)
     fill_tile_zeros<tile_bytes>(noc, cb_id, tile_id);
 
@@ -439,7 +439,7 @@ void fill_vertical_tile_bf16(const Noc& noc, uint32_t cb_id, uint32_t tile_id, u
  * Face 3 (rows 16-31, cols 16-31): same diagonal pattern as face 0 (shifted by 16 in both dims)
  */
 template <uint32_t tile_bytes>
-void fill_causal_diagonal_tile_bf16(const Noc& noc, uint32_t cb_id, uint32_t tile_id) {
+void fill_causal_diagonal_tile_bf16(Noc noc, uint32_t cb_id, uint32_t tile_id) {
     // Start with all zeros
     fill_tile_zeros<tile_bytes>(noc, cb_id, tile_id);
 
@@ -507,7 +507,7 @@ void fill_causal_diagonal_tile_bf16(const Noc& noc, uint32_t cb_id, uint32_t til
  * @tparam is_causal_lw          Whether to include the causal diagonal tile
  */
 template <uint32_t global_n_partial_col, uint32_t joint_l_partial_col, uint32_t cb_mask_in, bool is_causal_lw = false>
-void generate_lightweight_mask_tiles(const Noc& noc) {
+void generate_lightweight_mask_tiles(Noc noc) {
     constexpr uint32_t partial_mask_tiles = (global_n_partial_col > 0 ? 1 : 0) + (joint_l_partial_col > 0 ? 1 : 0);
     constexpr uint32_t causal_diag_tiles = is_causal_lw ? 1 : 0;
     constexpr uint32_t total_mask_tiles = 1 + causal_diag_tiles + partial_mask_tiles;
@@ -541,11 +541,7 @@ void generate_lightweight_mask_tiles(const Noc& noc) {
 
 template <uint32_t tile_bytes>
 inline void fill_custom_diagonal_tile_bfp4(
-    const Noc& noc,
-    uint32_t cb_id,
-    uint32_t tile_id,
-    int32_t leading_diagonal_offset,
-    int32_t trailing_diagonal_offset) {
+    Noc noc, uint32_t cb_id, uint32_t tile_id, int32_t leading_diagonal_offset, int32_t trailing_diagonal_offset) {
     // Assert that we're not in a case where the entire tile should be fully masked or fully allowed
     // Those cases should be handled before calling this function
     ASSERT(leading_diagonal_offset >= -32 && trailing_diagonal_offset >= -32);
@@ -674,7 +670,7 @@ inline void fill_custom_diagonal_tile_bfp4(
 }
 
 template <uint32_t tile_bytes>
-void fill_vertical_tile_bfp4(const Noc& noc, uint32_t cb_id, uint32_t tile_id, uint32_t unpad_col_in_tile) {
+void fill_vertical_tile_bfp4(Noc noc, uint32_t cb_id, uint32_t tile_id, uint32_t unpad_col_in_tile) {
     /*
     This tile should be set such that tile[:, unpad_col_in_tile:] = -inf
     For block float 4 format where 8 mantissas are packed per uint32
@@ -771,7 +767,7 @@ enum class MaskType { FULLY_ALLOWED, FULLY_MASKED, PARTIAL_MASK };
 
 template <uint32_t cb_mask_in>
 void generate_causal_sliding_window_mask(
-    const Noc& noc,
+    Noc noc,
     uint32_t Sq_chunk_t,
     uint32_t Sk_chunk_t,
     uint32_t q_chunk,
@@ -906,7 +902,7 @@ void generate_causal_sliding_window_mask(
 }
 
 template <uint32_t cb_mask_in>
-void generate_noncausal_padded_mask(const Noc& noc, uint32_t Sq_chunk_t, uint32_t Sk_chunk_t, uint32_t unpadded_Sk) {
+void generate_noncausal_padded_mask(Noc noc, uint32_t Sq_chunk_t, uint32_t Sk_chunk_t, uint32_t unpadded_Sk) {
     uint32_t mask_size_tiles = Sq_chunk_t * Sk_chunk_t;
     CircularBuffer cb(cb_mask_in);
     cb.reserve_back(mask_size_tiles);
@@ -965,7 +961,7 @@ void generate_noncausal_padded_mask(const Noc& noc, uint32_t Sq_chunk_t, uint32_
 // barrier_threshold > 0 fires a partial barrier every barrier_threshold tiles.
 template <typename ReaderType>
 inline void issue_block_reads(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     uint32_t base_tile_id,
     uint32_t row_stride,
@@ -1005,7 +1001,7 @@ inline void issue_block_reads(
 // counter the way DRAM reads do. Caller's trailing noc_async_read_barrier() handles visibility.
 template <typename ReaderType>
 inline void zero_fill_block(
-    const Noc& noc,
+    Noc noc,
     const ReaderType& reader,
     uint32_t num_rows,
     uint32_t cols,
@@ -1030,7 +1026,7 @@ inline void zero_fill_block(
 // as issue_block_reads (with src instead of dst). No barrier - caller must noc.async_write_barrier().
 template <typename WriterType>
 inline void issue_block_writes(
-    const Noc& noc,
+    Noc noc,
     const WriterType& writer,
     uint32_t base_tile_id,
     uint32_t row_stride,
@@ -1105,7 +1101,7 @@ struct CatAddrGenerator {
     // end_seq_tile is unused: bounds come from first_shape/second_shape; signature kept for
     // API symmetry with PaddedAddrGenerator (fetch_block dispatches generically).
     void issue_reads(
-        const Noc& noc,
+        Noc noc,
         const Slice& slice,
         uint32_t /*end_seq_tile*/,
         uint32_t dst_addr,
@@ -1174,7 +1170,7 @@ struct CatAddrGenerator {
     // noc_async_write_barrier(). Same segment split as issue_reads; gap and tail produce no
     // writes (those rows aren't mapped to either tensor). end_seq_tile unused (see issue_reads).
     void issue_writes(
-        const Noc& noc,
+        Noc noc,
         const Slice& slice,
         uint32_t /*end_seq_tile*/,
         uint32_t src_addr,
@@ -1235,7 +1231,7 @@ struct PaddedAddrGenerator {
     // noc_async_read_barrier(). Splits valid rows from the padded tail at loop level (no
     // in_bounds branch in the hot path); valid rows advance tile_id by arithmetic only.
     void issue_reads(
-        const Noc& noc,
+        Noc noc,
         const Slice& slice,
         uint32_t end_seq_tile,
         uint32_t dst_addr,
@@ -1279,7 +1275,7 @@ struct PaddedAddrGenerator {
     // Issue async NoC writes for a slice from L1. No barrier — caller must
     // noc.async_write_barrier(). Out-of-bound rows produce no writes.
     void issue_writes(
-        const Noc& noc,
+        Noc noc,
         const Slice& slice,
         uint32_t end_seq_tile,
         uint32_t src_addr,
@@ -1307,11 +1303,7 @@ struct PaddedAddrGenerator {
     }
 
     void issue_writes_no_padding(
-        const Noc& noc,
-        const Slice& slice,
-        uint32_t src_addr,
-        uint32_t outer_stride,
-        uint32_t inner_stride) const {
+        Noc noc, const Slice& slice, uint32_t src_addr, uint32_t outer_stride, uint32_t inner_stride) const {
         issue_block_writes(
             noc,
             reader,
@@ -1341,7 +1333,7 @@ PaddedAddrGenerator(const ReaderType&, TensorShapeType) -> PaddedAddrGenerator<R
 // overhead is negligible next to the per-block NoC reads.
 template <typename CatAddrGeneratorType>
 __attribute__((noinline)) void fetch_block(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_addr_generator,
     const Slice& src_slice,
     const uint32_t end_seq_tile,
@@ -1361,7 +1353,7 @@ __attribute__((noinline)) void fetch_block(
 
 template <typename CatAddrGeneratorType>
 void read_block(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_addr_generator,
     const Slice& src_slice,
     const uint32_t end_seq_tile,
@@ -1383,7 +1375,7 @@ void read_block(
 // dispatch). Out-of-bound rows are skipped (no zero-fill on writes).
 template <typename CatAddrGeneratorType>
 void write_block(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_addr_generator,
     const Slice& dst_slice,
     const uint32_t end_seq_tile,
@@ -1405,7 +1397,7 @@ void write_block(
 
 template <typename TensorAccessorType>
 void write_block(
-    const Noc& noc,
+    Noc noc,
     const TensorAccessorType& out_writer,
     const uint32_t cb_out,
     const uint32_t out_chunk_tiles,
@@ -1445,7 +1437,7 @@ void write_block(
 // sets a non-zero trid → drain flushes trid 0 (the default trid all writes here carry).
 template <typename TensorAccessorType>
 void write_block_row_grouped(
-    const Noc& noc,
+    Noc noc,
     const TensorAccessorType& out_writer,
     const uint32_t cb_out,
     const uint32_t total_rows,
@@ -1503,7 +1495,7 @@ void write_block_row_grouped(
 // to be source-L1-acked. Caller handles any final DRAM-arrival NoC barrier.
 template <bool all_rows_valid = false, typename CatAddrGeneratorType>
 void write_block_row_grouped_trid(
-    const Noc& noc,
+    Noc noc,
     const CatAddrGeneratorType& cat_addr_generator,
     const Slice& dst_slice,
     const uint32_t end_seq_tile,
@@ -1607,7 +1599,7 @@ void fill_attention_sink_tiles(uint32_t cb_id, uint32_t num_tiles, uint32_t sour
 
 template <bool is_chunked, uint32_t sliding_window_size, bool padded_or_joint_masks, uint32_t cb_mask_in>
 void generate_mask(
-    const Noc& noc,
+    Noc noc,
     const uint32_t Sq_chunk_t,
     const uint32_t Sk_chunk_t,
     const uint32_t q_chunk,

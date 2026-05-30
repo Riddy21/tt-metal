@@ -197,7 +197,7 @@ public:
      * Receive data from upstream link (called by non-injector participants).
      * Protocol: signal sender that we're ready, then wait for data.
      */
-    void receive(const Noc& noc) const {
+    void receive(Noc noc) const {
         Semaphore<> receiver_sem(receiver_sem_id_);
         receiver_sem.set(INVALID);
         // Atomically increment the upstream sender's "ready" semaphore.
@@ -210,13 +210,13 @@ public:
      * In mcast mode: wait for all receivers, then broadcast.
      * In unicast mode: wait for next receiver, then point-to-point transfer.
      */
-    void forward(const Noc& noc, uint32_t cb_addr) const { forward(noc, cb_addr, chunk_tiles_, tile_bytes_); }
+    void forward(Noc noc, uint32_t cb_addr) const { forward(noc, cb_addr, chunk_tiles_, tile_bytes_); }
 
     /**
      * Forward data to downstream link(s) with explicit size.
      * Use this when the data size differs from the default (e.g., K using head chain).
      */
-    void forward(const Noc& noc, uint32_t cb_addr, uint32_t num_tiles, uint32_t tile_bytes) const {
+    void forward(Noc noc, uint32_t cb_addr, uint32_t num_tiles, uint32_t tile_bytes) const {
         Semaphore<> sender_sem(sender_sem_id_);
         if constexpr (mcast_enabled) {
             sender_sem.wait(sender_wait_count_);
