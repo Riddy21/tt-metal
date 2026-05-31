@@ -32,7 +32,16 @@ namespace experimental {
 
 class GlobalCircularBuffer;
 
-struct DramCorePrefetcherConfig {};
+struct DramCorePrefetcherConfig {
+    // When true, drive each DRAM bank with two DRISC sender cores instead of one:
+    // the free non-endpoint subchannel plus the bank's NOC1-endpoint subchannel
+    // (both write on NOC0). The bank's receivers are split ceil/floor across the two
+    // cores, adding a second DMA engine + NoC initiator per bank. Only supported for
+    // the receiver-contiguous DRAM layout. The GlobalCircularBuffer must be created
+    // with the matching `dual_senders_per_bank` flag so its sender cores agree with
+    // the prefetcher's; a mismatch is rejected at QueueDramCorePrefetcherRequest.
+    bool dual_senders_per_bank = false;
+};
 
 // One prefetch work item: a weight tensor plus the number of K-blocks to split
 // its K dimension into. `block_count` is used in place of the GCB ring size when

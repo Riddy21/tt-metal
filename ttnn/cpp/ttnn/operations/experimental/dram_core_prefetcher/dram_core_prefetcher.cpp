@@ -9,8 +9,8 @@
 
 namespace ttnn::operations::experimental {
 
-void start_dram_core_prefetcher(tt::tt_metal::distributed::MeshDevice* mesh_device) {
-    tt::tt_metal::experimental::StartDramCorePrefetcher(*mesh_device, {});
+void start_dram_core_prefetcher(tt::tt_metal::distributed::MeshDevice* mesh_device, bool dual_senders_per_bank) {
+    tt::tt_metal::experimental::StartDramCorePrefetcher(*mesh_device, {.dual_senders_per_bank = dual_senders_per_bank});
 }
 
 void queue_dram_core_prefetcher_request(

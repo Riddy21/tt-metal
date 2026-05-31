@@ -120,12 +120,15 @@ private:
     uint32_t socket_config_l1_addr_ = 0;
     uint32_t socket_data_l1_addr_ = 0;
 
-    // sender_logical_cores_[s] = logical DRAM core for bank s. Picked at start
-    // via pick_unused_dram_logical_core(s); GCBs queued must use the same
-    // picks (deterministic on bank_id), which they do because the GCB factory
-    // calls the same picker.
+    // sender_logical_cores_[s] = logical DRAM core for sender s. Picked at start
+    // via pick_unused_dram_logical_core / dram_sender_logical_cores; GCBs queued
+    // must use the same picks (deterministic on bank_id), which they do because the
+    // GCB factory calls the same pickers with the same dual_senders_per_bank flag.
     std::vector<CoreCoord> sender_logical_cores_;
     uint32_t num_senders_ = 0;
+    uint32_t num_banks_ = 0;
+    // When true, each DRAM bank is driven by two sender cores (see DramCorePrefetcherConfig).
+    bool dual_senders_per_bank_ = false;
 
     // One program per IDevice in the mesh; programs_[d].
     std::vector<std::unique_ptr<Program>> programs_;
