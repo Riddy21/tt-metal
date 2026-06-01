@@ -260,10 +260,8 @@ bool run_top32_rm_dev(
 
 }  // namespace unit_tests::compute::top32_rm_dev
 
+// Disabled: test is currently failing. See https://github.com/tenstorrent/tt-metal/issues/45713
 TEST_F(MeshDeviceFixture, DISABLED_Top32RmDevPipelineCompletes) {
-    if (this->arch_ != tt::ARCH::BLACKHOLE) {
-        GTEST_SKIP() << "top32_rm_dev kernel requires Blackhole LLK headers";
-    }
     for (uint32_t row : {64u, 128u, 160u, 3232u}) {
         log_info(LogTest, "Top32 RM dev row_elements={}", row);
         EXPECT_TRUE(unit_tests::compute::top32_rm_dev::run_top32_rm_dev(this->devices_.at(0), row, 12345u));
