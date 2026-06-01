@@ -5,30 +5,20 @@
 #include "api/dataflow/dataflow_api.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/fabric_connection_manager.hpp"
 #include "tt_metal/fabric/hw/inc/fabric_routing_mode.h"
+#include "tt_metal/fabric/hw/inc/linear/api.h"
 #include "tt_metal/fabric/hw/inc/noc_addr.h"
 #include "tt_metal/fabric/hw/inc/tt_fabric_api.h"
+#include "cpp/ttnn/operations/ccl/kernel_common/worker_routing_utils.hpp"
 #include "cpp/ttnn/operations/ccl/kernel_common/worker_sync_utils.hpp"
 #include "cpp/ttnn/operations/ccl/ccl_host_types.hpp"
 #include "cpp/ttnn/operations/ccl/common/kernels/minimal_ccl_common.hpp"
 #include <cstdint>
 #include <utility>
 
-// FABRIC_2D vs 1D switch:
-// Under FABRIC_2D the kernel-injected ROUTING_MODE define contains ROUTING_MODE_2D
-// (see `tt_metal/fabric/fabric_context.cpp:compute_routing_mode`, fed in via
-// `CreateKernel`'s defines map in `tt_metal/impl/host_api/tt_metal.cpp`).
-// The 1D `fabric_set_unicast_route<false>(hdr, 1)` form means "1 hop" via the
-// LowLatencyPacketHeader overload (template `<target_as_dev=false>` selects the by-hops
-// decoder). Under 2D the same call resolves to the HybridMeshPacketHeader overload, which
-// interprets `1` as literal dst_dev_id with dst_mesh_id defaulting to MAX_NUM_MESHES — wrong.
-// Use the 3-arg form with explicit dst_chip_id + dst_mesh_id (passed in as runtime args
-// from the program factory) under 2D. Same pattern as writer_dispatch.cpp / writer_combine.cpp;
-// macro name is per-translation-unit.
-#if defined(ROUTING_MODE) && ((ROUTING_MODE & ROUTING_MODE_2D) != 0)
-#define RING_AG_FABRIC_2D 1
-#else
-#define RING_AG_FABRIC_2D 0
-#endif
+// FABRIC_2D vs 1D dispatch is handled portably via ccl_routing_utils::fabric_set_line_unicast_route
+// (templated on packet-header type). The kernel pulls dst_chip_id/dst_mesh_id from runtime
+// args and packs them into a line_unicast_route_info_t once; under 1D the helper reads
+// route_info.distance_in_hops, under 2D it reads route_info.dst_chip_id + dst_mesh_id.
 
 using address_t = uint32_t;
 using ttnn::ccl::Topology;
@@ -94,6 +84,18 @@ void kernel_main() {
     // ignores these. See program_factory writer_{forward,backward}_extra_args.
     const uint16_t fabric_dst_chip_id = static_cast<uint16_t>(get_arg_val<uint32_t>(arg_for_fab++));
     const uint16_t fabric_dst_mesh_id = static_cast<uint16_t>(get_arg_val<uint32_t>(arg_for_fab++));
+
+    // Single route_info populated once. Under 1D the helper consumes distance_in_hops (always
+    // 1 hop to the immediate neighbor); under 2D it consumes dst_chip_id + dst_mesh_id.
+    ccl_routing_utils::line_unicast_route_info_t route_info{};
+    route_info.dst_mesh_id = fabric_dst_mesh_id;
+    if constexpr (
+        std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::HybridMeshPacketHeader> ||
+        std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
+        route_info.dst_chip_id = fabric_dst_chip_id;
+    } else {
+        route_info.distance_in_hops = 1;
+    }
     /* Args for overlapped all gather */
     OpSignaler op_signaler_sender;
 
@@ -120,11 +122,7 @@ void kernel_main() {
     constexpr uint32_t num_targets_in_direction =
         direction == 1 ? num_targets_backward_direction : num_targets_forward_direction;
     if constexpr (num_targets_in_direction > 0) {
-#if RING_AG_FABRIC_2D
-        fabric_set_unicast_route<false>(pkt_hdr, fabric_dst_chip_id, fabric_dst_mesh_id);
-#else
-        fabric_set_unicast_route<false>(pkt_hdr, 1);
-#endif
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr, route_info);
     }
 
     fabric_connection.open();
@@ -235,20 +233,15 @@ void kernel_main() {
     // 2. unicast output ready semaphore
     uint64_t out_ready_sem_noc_addr_in_pkt =
         safe_get_noc_addr(out_ready_sem_noc0_x, out_ready_sem_noc0_y, out_ready_sem, 0);
-    auto* pkt_hdr_sem_inc = reinterpret_cast<PACKET_HEADER_TYPE*>(packet_header_buffer_seminc);
-    pkt_hdr_sem_inc->to_noc_unicast_atomic_inc(tt::tt_fabric::NocUnicastAtomicIncCommandHeader{
-        out_ready_sem_noc_addr_in_pkt, static_cast<uint32_t>(1)});  // increment 1
+    auto* pkt_hdr_sem_inc = reinterpret_cast<volatile PACKET_HEADER_TYPE*>(packet_header_buffer_seminc);
+    const auto sem_inc_cmd_header =
+        tt::tt_fabric::NocUnicastAtomicIncCommandHeader{out_ready_sem_noc_addr_in_pkt, static_cast<uint32_t>(1)};
 
     // Write the unicast packet
     if constexpr (num_targets_in_direction) {
-        fabric_direction_connection->wait_for_empty_write_slot();
-#if RING_AG_FABRIC_2D
-        fabric_set_unicast_route<false>(pkt_hdr_sem_inc, fabric_dst_chip_id, fabric_dst_mesh_id);
-#else
-        fabric_set_unicast_route<false>(pkt_hdr_sem_inc, 1);
-#endif
-        fabric_direction_connection->send_payload_flush_blocking_from_address(
-            packet_header_buffer_seminc, sizeof(PACKET_HEADER_TYPE));
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_sem_inc, route_info);
+        tt::tt_fabric::linear::experimental::fabric_unicast_noc_unicast_atomic_inc(
+            fabric_direction_connection, pkt_hdr_sem_inc, sem_inc_cmd_header, /*num_hops=*/1);
     }
 
     uint32_t writes_expected = 0;
@@ -354,14 +347,9 @@ void kernel_main() {
         }
 
         // 2. unicast output ready semaphore forward
-        fabric_direction_connection->wait_for_empty_write_slot();
-#if RING_AG_FABRIC_2D
-        fabric_set_unicast_route<false>(pkt_hdr_sem_inc, fabric_dst_chip_id, fabric_dst_mesh_id);
-#else
-        fabric_set_unicast_route<false>(pkt_hdr_sem_inc, 1);
-#endif
-        fabric_direction_connection->send_payload_flush_blocking_from_address(
-            packet_header_buffer_seminc, sizeof(PACKET_HEADER_TYPE));
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_sem_inc, route_info);
+        tt::tt_fabric::linear::experimental::fabric_unicast_noc_unicast_atomic_inc(
+            fabric_direction_connection, pkt_hdr_sem_inc, sem_inc_cmd_header, /*num_hops=*/1);
 
         slice_writes++;
     }
