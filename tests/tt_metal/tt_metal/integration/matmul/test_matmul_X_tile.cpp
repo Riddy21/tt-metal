@@ -334,7 +334,7 @@ static void matmul_tile_block(
         {"TEST_INIT_SHORT", cfg.test_init_short ? "1" : "0"},
     };
     if (cfg.fp32_dest_acc_en) {
-        compute_defines.emplace_back("DST_ACCUM_MODE", "1");
+        compute_defines.emplace("DST_ACCUM_MODE", "1");
     }
 
     experimental::metal2_host_api::KernelSpec compute_spec{

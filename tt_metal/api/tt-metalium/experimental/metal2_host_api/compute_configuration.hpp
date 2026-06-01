@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <tt-metalium/experimental/metal2_host_api/dataflow_buffer_spec.hpp>
+#include <tt-metalium/experimental/metal2_host_api/table.hpp>
 #include <tt-metalium/base_types.hpp>  // For MathFidelity, UnpackToDestMode (global scope)
 
 namespace tt::tt_metal::experimental::metal2_host_api {
@@ -53,8 +54,9 @@ struct ComputeConfiguration {
     // You MUST provide an unpack_to_dest_mode entry for the DFB if these conditions hold;
     // failing to do so will trigger an error. Otherwise, supplying an entry is optional
     // and only Default is accepted.
-    using UnpackToDestModeEntry = std::pair<DFBSpecName, tt::tt_metal::UnpackToDestMode>;
-    std::vector<UnpackToDestModeEntry> unpack_to_dest_mode;
+    using UnpackToDestModes = Table<DFBSpecName, tt::tt_metal::UnpackToDestMode>;
+    using UnpackToDestModeEntry = UnpackToDestModes::value_type;
+    UnpackToDestModes unpack_to_dest_mode;
 };
 
 }  // namespace tt::tt_metal::experimental::metal2_host_api

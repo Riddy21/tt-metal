@@ -333,7 +333,7 @@ bool run_sfpu_all_same_buffer(
 
     experimental::metal2_host_api::KernelSpec::CompilerOptions::Defines compute_defines;
     for (const auto& [k, v] : sfpu_defines) {
-        compute_defines.emplace_back(k, v);
+        compute_defines.emplace(k, v);
     }
 
     experimental::metal2_host_api::KernelSpec compute_spec{
@@ -552,7 +552,7 @@ bool run_sfpu_binary_two_input_buffer(
 
     experimental::metal2_host_api::KernelSpec::CompilerOptions::Defines compute_defines;
     for (const auto& [k, v] : sfpu_defines) {
-        compute_defines.emplace_back(k, v);
+        compute_defines.emplace(k, v);
     }
 
     experimental::metal2_host_api::KernelSpec compute_spec{

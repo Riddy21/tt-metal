@@ -315,8 +315,8 @@ void run_single_core_tilize_program(
         });
         compute_kernel = "tests/tt_metal/tt_metal/test_kernels/compute/" + untilize_type + "_untilize.cpp";
         if (test_config.untilize_type == UntilizeType::DST) {
-            compute_cta_bindings.push_back({"num_faces", test_config.num_faces_per_tile});
-            compute_cta_bindings.push_back({"num_rows_per_face", test_config.face_r_dim});
+            compute_cta_bindings.emplace("num_faces", test_config.num_faces_per_tile);
+            compute_cta_bindings.emplace("num_rows_per_face", test_config.face_r_dim);
         }
     } else if (is_unpack_a_tilize) {
         compute_kernel = "tests/tt_metal/tt_metal/test_kernels/compute/tilize.cpp";
@@ -326,10 +326,10 @@ void run_single_core_tilize_program(
 
     experimental::metal2_host_api::KernelSpec::CompilerOptions::Defines compute_defines;
     if (test_config.fp32_dest_acc_en) {
-        compute_defines.emplace_back("DST_ACCUM_MODE", "1");
+        compute_defines.emplace("DST_ACCUM_MODE", "1");
     }
     if (test_config.fast_tilize) {
-        compute_defines.emplace_back("FAST_TILIZE", "1");
+        compute_defines.emplace("FAST_TILIZE", "1");
     }
 
     experimental::metal2_host_api::KernelSpec compute_spec{

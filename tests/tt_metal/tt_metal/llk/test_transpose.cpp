@@ -241,7 +241,7 @@ void run_single_core_transpose(
 
     experimental::metal2_host_api::KernelSpec::CompilerOptions::Defines compute_defines;
     if (test_config.short_init) {
-        compute_defines.emplace_back("SHORT_INIT", "1");
+        compute_defines.emplace("SHORT_INIT", "1");
     }
 
     const char* compute_kernel_path = test_config.transpose_dest
