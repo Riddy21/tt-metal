@@ -64,7 +64,7 @@ MOE_DEVICE_PARAMS = {
     "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
     "reliability_mode": ttnn.FabricReliabilityMode.RELAXED_INIT,
     "fabric_config": ttnn.FabricConfig.FABRIC_1D_RING,
-    "trace_region_size": 500000,
+    "trace_region_size": 750000,
 }
 
 
@@ -141,8 +141,18 @@ _MODELS_1x8 = [
 # host-side golden-compute fast on real hardware, num_layers=1 because num_layers>1 hits
 # a DRAM->L1 reshard hang on BH LB (deferred follow-up).
 _MODELS_BH_LB_1x8 = [
-    MoEModelConfig("gpt_oss",     N=2880, hidden_size=2880, selected_experts_k=4, experts_per_device_values=(4,), has_bias_values=(True,), activation_types=(MoEActivationFunction.SWIGLU,)),
-    MoEModelConfig("deepseek_v3", N=2048, hidden_size=7168, selected_experts_k=8, has_bias_values=(False, True), tokens_per_device=8),
+    MoEModelConfig("deepseek_ocr",       N=896,  hidden_size=1280, selected_experts_k=6),
+    MoEModelConfig("qwen3_omni_talker",  N=384,  hidden_size=1024, selected_experts_k=6),
+    MoEModelConfig("qwen3_omni_thinker", N=768,  hidden_size=2048, selected_experts_k=8),
+    MoEModelConfig("qwen35_35b",         N=512,  hidden_size=2048, selected_experts_k=8),
+    MoEModelConfig("gemma_4_26b",        N=704,  hidden_size=2816, selected_experts_k=8, activation_types=(MoEActivationFunction.GELU,)),
+    MoEModelConfig("gpt_oss",            N=2880, hidden_size=2880, selected_experts_k=4, experts_per_device_values=(4,), has_bias_values=(True,), test_modes=("perf", "correctness"), activation_types=(MoEActivationFunction.SWIGLU,)),
+    MoEModelConfig("qwen3_235b",         N=1536, hidden_size=4096, selected_experts_k=8),
+    MoEModelConfig("qwen35_397b",        N=1024, hidden_size=4096, selected_experts_k=10),
+    MoEModelConfig("glm_47",             N=1536, hidden_size=5120, selected_experts_k=8),
+    MoEModelConfig("glm5",               N=2048, hidden_size=6144, selected_experts_k=8),
+    MoEModelConfig("kimi_k25",           N=2048, hidden_size=7168, selected_experts_k=8, experts_per_device_values=(6,), tokens_per_device=8),
+    MoEModelConfig("deepseek_v3",        N=2048, hidden_size=7168, selected_experts_k=8, has_bias_values=(False, True), tokens_per_device=8, test_modes=("perf", "correctness"),),
 ]
 # fmt: on
 
@@ -152,7 +162,7 @@ MODELS_BH_LB_1x8 = _expand_model_configs(_MODELS_BH_LB_1x8)
 
 
 def _run_model_test(
-    mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type
+    mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type, bh_ring_size = 12
 ):
     if test_mode == "perf":
         selected_experts_k = 1
@@ -180,6 +190,7 @@ def _run_model_test(
         enable_trace=enable_trace,
         activation_type=activation_type,
         has_bias=has_bias,
+        bh_ring_size=bh_ring_size,
     )
 
 
@@ -1380,6 +1391,7 @@ def run_moe_compute_test(
     has_bias,
     topology=None,
     num_links=None,
+    bh_ring_size=12,
 ):
     """
     Core test execution helper function.
@@ -1564,7 +1576,9 @@ def run_moe_compute_test(
     # Shard grid
     # --------------------------------------------------------------------------
 
-    w0_w1_shard_map, w2_shard_map, dram_core_range_set = get_weight_core_shard_maps(mesh_device, hidden_size, N)
+    w0_w1_shard_map, w2_shard_map, dram_core_range_set = get_weight_core_shard_maps(
+        mesh_device, hidden_size, N, bh_ring_size=bh_ring_size
+    )
 
     torch_w0 = create_torch_w0(num_layers, experts_per_device, hidden_size, N)
     torch_w1 = create_torch_w1(num_layers, experts_per_device, hidden_size, N)
@@ -1789,6 +1803,7 @@ def run_moe_compute_test(
             optional_output_tensor=tt_combine_output_tensors[layer_id],
             optional_cross_device_semaphore=combine_barrier_semaphore,
             activation_type=activation_type,
+            bh_ring_size=bh_ring_size,
         )
 
     #########################################
@@ -1863,7 +1878,7 @@ def run_moe_compute_test(
         mesh_device, output_height_shard_dim, output_width_shard_dim
     )
     worker_mcast_bbox = ttnn.experimental.get_moe_worker_mcast_bounding_box(
-        mesh_device, output_height_shard_dim, output_width_shard_dim, hidden_size
+        mesh_device, output_height_shard_dim, output_width_shard_dim, hidden_size, bh_ring_size
     )
     per_expert_tokens_all_passed = True
     activation_all_passed = True
@@ -1989,9 +2004,15 @@ def test_moe_compute_1x16(
 )
 @pytest.mark.parametrize("device_params", [MOE_DEVICE_PARAMS], indirect=True)
 @pytest.mark.parametrize("mesh_shape, mesh_device", [((1, 8), (1, 8))], indirect=["mesh_device"])
+@pytest.mark.parametrize(
+    "enable_trace", [pytest.param(False, id="disable_trace"), pytest.param(True, id="enable_trace")]
+)
+@pytest.mark.parametrize(
+    "bh_ring_size", [8, 12, 16], ids=["bh_ring_size_8", "bh_ring_size_12", "bh_ring_size_16"]
+)
 @pytest.mark.parametrize("model_cfg, test_mode, has_bias, experts_per_device, activation_type", MODELS_BH_LB_1x8)
 def test_moe_compute_bh_lb_1x8(
-    mesh_device, mesh_shape, model_cfg, test_mode, has_bias, experts_per_device, activation_type
+    mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type, bh_ring_size
 ):
     """BH single Loudbox EP=8 every-chip-active end-to-end MoE test (#43444).
 
@@ -2022,11 +2043,12 @@ def test_moe_compute_bh_lb_1x8(
         output_height_shard_dim=model_cfg.output_height_shard_dim,
         output_width_shard_dim=auto_output_width_shard_dim(model_cfg.hidden_size),
         dtype=ttnn.bfloat16,
-        enable_trace=False,
+        enable_trace=enable_trace,
         activation_type=activation_type,
         has_bias=has_bias,
         topology=ttnn.Topology.Linear,  # BH LB has no chassis wraparound; 1x8 view is still LINE
         num_links=2,  # BH LB has 2 eth channels per adjacent-chip link (vs 4 on WH 6U)
+        bh_ring_size=bh_ring_size,
     )
 
 
