@@ -63,10 +63,10 @@ The initial release of the 3-tier model CI includes models owned by the models-t
 | Mixtral-8x7B | WH LLMBox |
 | Gemma-3-4B | WH N150 |
 | Gemma-3-27B | WH LLMBox |
-| Gemma-4-E2B | WH N150 |
-| Gemma-4-E4B | WH N150 |
-| Gemma-4-26B-A4B | WH LLMBox |
-| Gemma-4-31B | WH LLMBox |
+| Gemma-4-E2B | WH N150, BH P150 |
+| Gemma-4-E4B | WH N150, BH P150, BH P300, BH QuietBox 2 |
+| Gemma-4-26B-A4B | WH LLMBox, BH LoudBox, BH QuietBox 2 |
+| Gemma-4-31B | WH LLMBox, BH LoudBox, BH QuietBox 2 |
 ## Tier 3 Models
 | Model | Systems |
 |-------|---------|
