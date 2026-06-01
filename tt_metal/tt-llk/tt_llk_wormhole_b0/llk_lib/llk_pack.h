@@ -260,9 +260,10 @@ inline void _llk_pack_init_(
     TT_SETADCXX(p_setadc::PAC, pack_x_dim - 1, 0x0);
 }
 
-inline void _llk_pack_uninit_(const std::uint32_t face_r_dim)
+inline void _llk_pack_uninit_([[maybe_unused]] const std::uint32_t face_r_dim)
 {
-    TT_SETADCXX(p_setadc::PAC, face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
+    // nothing to restore here.
 }
 
 template <DstSync Dst, bool is_fp32_dest_acc_en, PackMode pack_mode = PackMode::Default>

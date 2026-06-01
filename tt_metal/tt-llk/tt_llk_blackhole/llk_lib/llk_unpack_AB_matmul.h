@@ -240,11 +240,10 @@ __attribute__((always_inline)) inline void _llk_unpack_AB_matmul_init_(
     _llk_unpack_AB_matmul_mop_config_<kernel_broadcast_a, kernel_broadcast_b>(ct_dim, rt_dim, unpA_partial_face, unpB_partial_face);
 }
 
-inline void _llk_unpack_AB_matmul_uninit_(const std::uint32_t unpA_face_r_dim, const std::uint32_t unpB_face_r_dim)
+inline void _llk_unpack_AB_matmul_uninit_([[maybe_unused]] const std::uint32_t unpA_face_r_dim, [[maybe_unused]] const std::uint32_t unpB_face_r_dim)
 {
-    // TODO NC: Issue tt-llk#1036 will make this transient
-    TT_SETADCXX(p_setadc::UNP_A, unpA_face_r_dim * FACE_C_DIM - 1, 0x0);
-    TT_SETADCXX(p_setadc::UNP_B, unpB_face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
+    // nothing to restore here.
 }
 
 template <std::uint32_t kernel_broadcast_a = 0, std::uint32_t kernel_broadcast_b = 0>

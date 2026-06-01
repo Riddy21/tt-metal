@@ -160,9 +160,10 @@ inline void _llk_pack_untilize_init_(const std::uint32_t pack_dst_format, const 
     }
 }
 
-inline void _llk_pack_untilize_uninit_(const std::uint32_t face_r_dim)
+inline void _llk_pack_untilize_uninit_([[maybe_unused]] const std::uint32_t face_r_dim)
 {
-    TT_SETADCXX(p_setadc::PAC, face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
+    // nothing to restore here.
 }
 
 template <

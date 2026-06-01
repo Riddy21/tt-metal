@@ -412,12 +412,11 @@ inline void _llk_unpack_tilizeA_B_(
     }
 }
 
-inline void _llk_unpack_tilize_uninit_(const std::uint32_t unpack_dst_format, const std::uint32_t face_r_dim)
+inline void _llk_unpack_tilize_uninit_(const std::uint32_t unpack_dst_format, [[maybe_unused]] const std::uint32_t face_r_dim)
 {
     // Stalling SETDMAREG done by THCON until UNPACK finishes
     TTI_STALLWAIT(p_stall::STALL_THCON, p_stall::UNPACK);
-    TT_SETADCXX(p_setadc::UNP_A, face_r_dim * FACE_C_DIM - 1, 0x0);
-    TT_SETADCXX(p_setadc::UNP_B, face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036); nothing to restore here.
 
     // Revert Z and Y dim value back to default:
     // THCON_SEC0_REG0_TileDescriptor_ADDR32 + 1 - word 1 of the same-named register
@@ -443,11 +442,10 @@ inline void _llk_unpack_tilize_uninit_(const std::uint32_t unpack_dst_format, co
         p_gpr_unpack::FACE_DIM_16x16); // GPR preloaded with  16 | (16 << 16)}
 }
 
-inline void _llk_unpack_tilizeA_B_uninit_(const std::uint32_t unpack_dst_format, const std::uint32_t face_r_dim)
+inline void _llk_unpack_tilizeA_B_uninit_(const std::uint32_t unpack_dst_format, [[maybe_unused]] const std::uint32_t face_r_dim)
 {
     TTI_STALLWAIT(p_stall::STALL_THCON, p_stall::UNPACK);
-    TT_SETADCXX(p_setadc::UNP_A, face_r_dim * FACE_C_DIM - 1, 0x0);
-    TT_SETADCXX(p_setadc::UNP_B, face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036); nothing to restore here.
 
     // reset z/w counters
     TTI_SETADCZW(p_setadc::UNP_AB, 0, 0, 0, 0, SETADC_CH01(p_setadc::ZW));

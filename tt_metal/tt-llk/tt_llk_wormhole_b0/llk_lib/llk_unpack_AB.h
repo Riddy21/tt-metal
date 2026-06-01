@@ -177,11 +177,10 @@ inline void _llk_unpack_AB_init_(const ckernel::TensorShape tensor_shape, const 
  * @param unpA_tensor_shape: Tensor shape for source A operand
  * @param unpB_tensor_shape: Tensor shape for source B operand
  */
-inline void _llk_unpack_AB_uninit_(const ckernel::TensorShape unpA_tensor_shape, const ckernel::TensorShape unpB_tensor_shape)
+inline void _llk_unpack_AB_uninit_([[maybe_unused]] const ckernel::TensorShape unpA_tensor_shape, [[maybe_unused]] const ckernel::TensorShape unpB_tensor_shape)
 {
-    // TODO NC: Issue tt-llk#1036 will make this transient
-    TT_SETADCXX(p_setadc::UNP_A, unpA_tensor_shape.face_r_dim * unpA_tensor_shape.face_c_dim - 1, 0x0);
-    TT_SETADCXX(p_setadc::UNP_B, unpB_tensor_shape.face_r_dim * unpB_tensor_shape.face_c_dim - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
+    // nothing to restore here.
 }
 
 /**
@@ -353,11 +352,11 @@ inline void _llk_unpack_bcastA_B_init_()
     _llk_unpack_bcastA_B_mop_config_();
 }
 
-inline void _llk_unpack_bcastA_B_uninit_(const std::uint32_t y_stride = FACE_R_DIM * 2, const std::uint32_t face_r_dim = FACE_R_DIM)
+inline void _llk_unpack_bcastA_B_uninit_(const std::uint32_t y_stride = FACE_R_DIM * 2, [[maybe_unused]] const std::uint32_t face_r_dim = FACE_R_DIM)
 {
     // Revisit default stride value in tt-llk#1015
     cfg_reg_rmw_tensix<UNP0_ADDR_CTRL_XY_REG_1_Ystride_RMW>(y_stride);
-    TT_SETADCXX(p_setadc::UNP_AB, face_r_dim * FACE_C_DIM - 1, 0x0);
+    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036); nothing to restore here.
 }
 
 inline void _llk_unpack_bcastA_B_(const std::uint32_t address_a, const std::uint32_t address_b, std::uint32_t srca_reuse_count = 4)

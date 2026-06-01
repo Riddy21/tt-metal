@@ -311,7 +311,7 @@ inline void _llk_pack_mop_config_(
 
 namespace llk_pack_internal_bh
 {
-template <PackMode pack_mode, bool zero_output, bool skip_addrmod_config, bool skip_packer_strides, bool skip_final_adcxx>
+template <PackMode pack_mode, bool zero_output, bool skip_addrmod_config, bool skip_packer_strides>
 inline void pack_init_apply(
     const std::uint32_t pack_src_format,
     const std::uint32_t face_r_dim,
@@ -329,10 +329,9 @@ inline void pack_init_apply(
         set_packer_strides<pack_mode>(pack_src_format, tile_c_dim);
     }
 
-    if constexpr (!skip_final_adcxx)
-    {
-        TTI_SETADCXX(p_setadc::PAC, FACE_C_DIM - 1, 0x0);
-    }
+    // x-start/x-end is a transient state: every pack init programs the packer ADC X counter
+    // to the operand's row width (see tt-llk#1036). FACE_C_DIM - 1 is the default tile row width.
+    TTI_SETADCXX(p_setadc::PAC, FACE_C_DIM - 1, 0x0);
 }
 } // namespace llk_pack_internal_bh
 
@@ -381,7 +380,7 @@ inline void _llk_pack_init_(
     const std::uint32_t num_tiles  = 1)
 {
     LLK_ASSERT(num_faces == 1 || num_faces == 2 || num_faces == 4, "num_faces must be 1, 2, or 4");
-    llk_pack_internal_bh::pack_init_apply<pack_mode, zero_output, skip_addrmod_config, true /* skip_packer_strides */, true /* skip_final_adcxx */>(
+    llk_pack_internal_bh::pack_init_apply<pack_mode, zero_output, skip_addrmod_config, true /* skip_packer_strides */>(
         0 /* pack_src_format unused */, face_r_dim, tile_c_dim, num_faces, num_tiles);
 }
 
@@ -409,12 +408,12 @@ inline void _llk_pack_init_(
     // so we can skip the workaround which involves unswizzling rows in the tile.
     if (skip_bh_tilize_workaround && pack_mode == PackMode::Tilize)
     {
-        llk_pack_internal_bh::pack_init_apply<PackMode::Default, zero_output, skip_addrmod_config, skip_packer_strides, false /* skip_final_adcxx */>(
+        llk_pack_internal_bh::pack_init_apply<PackMode::Default, zero_output, skip_addrmod_config, skip_packer_strides>(
             pack_src_format, face_r_dim, tile_c_dim, num_faces, num_tiles);
     }
     else
     {
-        llk_pack_internal_bh::pack_init_apply<pack_mode, zero_output, skip_addrmod_config, skip_packer_strides, false /* skip_final_adcxx */>(
+        llk_pack_internal_bh::pack_init_apply<pack_mode, zero_output, skip_addrmod_config, skip_packer_strides>(
             pack_src_format, face_r_dim, tile_c_dim, num_faces, num_tiles);
     }
 }
