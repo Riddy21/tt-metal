@@ -143,10 +143,7 @@ void kernel_main() {
         uint32_t zi_done_semaphore_id = get_arg_val<uint32_t>(rt_args++);
         uint32_t zi_done_sem_address = get_semaphore(zi_done_semaphore_id);
 
-        fill_zero_buffer(zi_cb_id);
-        uint32_t zero_buf = get_write_ptr(zi_cb_id);
-
-        zero_pages(zero_buf, page_start, page_end, aligned_output_page_size, output_addr_gen);
+        zero_pages(zi_cb_id, page_start, page_end, aligned_output_page_size, output_addr_gen);
 
         volatile tt_l1_ptr uint32_t* zi_done_sem_ptr =
             reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zi_done_sem_address);
