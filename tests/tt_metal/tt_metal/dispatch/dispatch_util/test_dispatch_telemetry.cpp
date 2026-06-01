@@ -215,7 +215,7 @@ TEST_F(DispatchTelemetryReadApiTest, DispatchProgramCountIncrementsAfterProgramR
 
     auto after_one = telemetry.read_info();
     ASSERT_FALSE(after_one.empty());
-    EXPECT_EQ(after_one.front().dispatch_program_count_since_last_read, 1);
+    EXPECT_EQ(after_one.front().program_count_since_last_read, 1);
 
     // Multiple runs to ensure the delta is calculated correctly
     for (size_t run = 0; run < total_runs; ++run) {
@@ -228,7 +228,7 @@ TEST_F(DispatchTelemetryReadApiTest, DispatchProgramCountIncrementsAfterProgramR
 
         auto after_many = telemetry.read_info();
         ASSERT_FALSE(after_many.empty());
-        EXPECT_EQ(after_many.front().dispatch_program_count_since_last_read, num_blank_programs);
+        EXPECT_EQ(after_many.front().program_count_since_last_read, num_blank_programs);
     }
 }
 

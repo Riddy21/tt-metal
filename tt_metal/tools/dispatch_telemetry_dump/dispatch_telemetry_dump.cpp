@@ -107,7 +107,7 @@ bool print_snapshot(IDevice* device, DispatchTelemetry& telemetry) {
             "dispatch",
             info.dispatch_waiting_on_upstream ? "yes" : "no",
             info.dispatch_blocked_count_since_last_read,
-            info.dispatch_program_count_since_last_read);
+            info.program_count_since_last_read);
     }
     std::cout.flush();
     return true;

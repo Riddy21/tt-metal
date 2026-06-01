@@ -220,7 +220,7 @@ public:
                         info.dispatch_blocked_count_since_last_read = calc_delta(
                             telemetry->upstream_blocked_count,
                             last_read_dispatch_core_telemetry_[cq].upstream_blocked_count);
-                        info.dispatch_program_count_since_last_read =
+                        info.program_count_since_last_read =
                             calc_delta(telemetry->program_count, last_read_dispatch_core_telemetry_[cq].program_count);
                         found_dispatch_core = true;
                         last_read_dispatch_core_telemetry_[cq] = *telemetry;
