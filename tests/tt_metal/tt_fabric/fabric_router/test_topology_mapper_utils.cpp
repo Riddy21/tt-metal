@@ -3570,6 +3570,83 @@ TEST_F(TopologyMapperUtilsTest, MapMultiMeshToPhysical_FourNodesFourHosts_NoHost
     verify_same_host_same_rank(result, fabric_node_id_to_mesh_rank[mesh0], config.hostname_to_asics);
 }
 
+// =============================================================================
+// Rank binding pools must include pinned ASICs (BH Galaxy / exabox-style pinnings)
+// =============================================================================
+
+TEST_F(TopologyMapperUtilsTest, RankBindingPoolsIncludePinnedAsics_GalaxyTrayPinOnM0D0) {
+    using namespace ::tt::tt_fabric;
+
+    const MeshId mesh0{0};
+    const FabricNodeId m0d0{mesh0, 0};
+
+    // 16 ASICs on trays 1-4, locations 0-3.
+    std::vector<tt::tt_metal::AsicID> asics;
+    asics.reserve(16);
+    TopologyMappingConfig config;
+    for (uint32_t tray = 1; tray <= 4; ++tray) {
+        for (uint32_t loc = 0; loc < 4; ++loc) {
+            const tt::tt_metal::AsicID asic_id{static_cast<uint64_t>(tray * 10 + loc)};
+            asics.push_back(asic_id);
+            config.asic_positions[asic_id] = {tt::tt_metal::TrayID{tray}, tt::tt_metal::ASICLocation{loc}};
+        }
+    }
+
+    // Rank 0 owns trays {1,3} except location 1 on each tray (8 ASICs).
+    // Rank 1 owns the remaining 8 ASICs (trays 2,4 plus corner locations on 1,3).
+    std::map<MeshId, std::map<tt::tt_metal::AsicID, MeshHostRankId>> asic_id_to_mesh_rank;
+    std::map<std::string, std::set<tt::tt_metal::AsicID>> hostname_to_asics;
+    for (const auto& asic_id : asics) {
+        const auto& pos = config.asic_positions.at(asic_id);
+        const uint32_t tray = *pos.first;
+        const uint32_t loc = *pos.second;
+        const bool rank0_asic = (tray == 1 || tray == 3) && loc != 1;
+        const MeshHostRankId rank = rank0_asic ? MeshHostRankId{0} : MeshHostRankId{1};
+        asic_id_to_mesh_rank[mesh0][asic_id] = rank;
+        const std::string& host = rank0_asic ? "host_rank_0" : "host_rank_1";
+        hostname_to_asics[host].insert(asic_id);
+    }
+    config.hostname_to_asics = hostname_to_asics;
+    config.disable_rank_bindings = false;
+
+    // Galaxy-style NW corner pin: M0D0 may use location 1 on any tray.
+    for (uint32_t tray = 1; tray <= 4; ++tray) {
+        config.pinnings.emplace_back(AsicPosition{tt::tt_metal::TrayID{tray}, tt::tt_metal::ASICLocation{1}}, m0d0);
+    }
+
+    // Logical / physical 1-node graphs (connectivity irrelevant for this constraint test).
+    LogicalAdjacencyMap logical_adj{{m0d0, {}}};
+    PhysicalAdjacencyMap physical_adj;
+    for (const auto& asic_id : asics) {
+        physical_adj[asic_id] = {};
+    }
+
+    std::map<FabricNodeId, MeshHostRankId> fabric_node_ranks{{m0d0, MeshHostRankId{0}}};
+
+    LogicalMultiMeshGraph logical_graph;
+    logical_graph.mesh_adjacency_graphs_[mesh0] = AdjacencyGraph<FabricNodeId>(logical_adj);
+    AdjacencyGraph<MeshId>::AdjacencyMap logical_mesh_level_adj{{mesh0, {}}};
+    logical_graph.mesh_level_graph_ = AdjacencyGraph<MeshId>(logical_mesh_level_adj);
+
+    PhysicalMultiMeshGraph physical_graph;
+    physical_graph.mesh_adjacency_graphs_[mesh0] = AdjacencyGraph<tt::tt_metal::AsicID>(physical_adj);
+    AdjacencyGraph<MeshId>::AdjacencyMap physical_mesh_level_adj{{mesh0, {}}};
+    physical_graph.mesh_level_graph_ = AdjacencyGraph<MeshId>(physical_mesh_level_adj);
+
+    std::map<MeshId, std::map<FabricNodeId, MeshHostRankId>> fabric_node_id_to_mesh_rank{{mesh0, fabric_node_ranks}};
+
+    TopologyMappingResult result;
+    ASSERT_NO_THROW({
+        result = map_multi_mesh_to_physical(
+            logical_graph, physical_graph, config, asic_id_to_mesh_rank, fabric_node_id_to_mesh_rank);
+    }) << "Pinned ASICs outside the rank-binding slice must be merged into the rank pool before pinning constraints";
+
+    EXPECT_THAT(
+        result.error_message,
+        ::testing::Not(::testing::HasSubstr("Failed to add required constraint for fabric node (mesh=0, chip=0)")));
+    EXPECT_THAT(result.error_message, ::testing::Not(::testing::HasSubstr("  - M0D0")));
+}
+
 TEST_F(TopologyMapperUtilsTest, MapMultiMeshToPhysical_NoHostRankAssigned_2x2Torus) {
     // 2x2 torus, 2 hosts with 2 ASICs each, all UNSET.
     using namespace ::tt::tt_fabric;

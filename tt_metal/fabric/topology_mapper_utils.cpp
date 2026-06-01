@@ -1755,10 +1755,25 @@ void add_rank_binding_constraints(
     }
 
     // Add required constraint: fabric nodes of rank R can only map to ASICs in rank_to_asics[R].
+    // Include MGD-pinned ASIC positions for fabric nodes on each rank so rank-binding pools stay
+    // compatible with subsequent pinning constraints (exabox/Galaxy corner pinnings on M0D0).
     for (const auto& [rank, fabric_nodes] : rank_to_fabric_nodes) {
         auto asic_it = rank_to_asics.find(rank);
         if (asic_it != rank_to_asics.end() && !asic_it->second.empty()) {
-            if (!intra_mesh_constraints.add_required_constraint(fabric_nodes, asic_it->second)) {
+            std::set<tt::tt_metal::AsicID> rank_pool = asic_it->second;
+            for (const auto& fabric_node : fabric_nodes) {
+                for (const auto& [position, pinned_node] : config.pinnings) {
+                    if (pinned_node.mesh_id != logical_mesh_id || pinned_node != fabric_node) {
+                        continue;
+                    }
+                    for (const auto& [asic_id, asic_pos] : config.asic_positions) {
+                        if (asic_pos.first == position.first && asic_pos.second == position.second) {
+                            rank_pool.insert(asic_id);
+                        }
+                    }
+                }
+            }
+            if (!intra_mesh_constraints.add_required_constraint(fabric_nodes, rank_pool)) {
                 TT_THROW(
                     "Failed to add required constraint for rank bindings in mesh {} for rank {}",
                     logical_mesh_id.get(),
