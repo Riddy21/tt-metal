@@ -121,13 +121,13 @@
     pytest $PYTEST_COMPILE_EXTRA --speed-of-light --compile-producer -n 10 -m "perf" --timeout=60 \
       --splits 5 --group 1 \
       --junitxml=pytest-report-blackhole-1-compile.xml .
-    pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 15 -x -m "perf" --timeout=60 \
+    LLK_RESET_BETWEEN_TESTS=1 pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 1 -x -m "perf" --timeout=60 \
       --splits 5 --group 1 \
       --junitxml=pytest-report-blackhole-1-run.xml .
     junitparser merge pytest-report-blackhole-1-compile.xml pytest-report-blackhole-1-run.xml pytest-report-blackhole-1.xml
   skus:
     bh_p150b_civ2:
-      timeout: 107
+      timeout: 240
   owner_id: U07J3K6KS1K
 
 - name: llk_perf_blackhole group 2/5
@@ -142,13 +142,13 @@
     pytest $PYTEST_COMPILE_EXTRA --speed-of-light --compile-producer -n 10 -m "perf" --timeout=60 \
       --splits 5 --group 2 \
       --junitxml=pytest-report-blackhole-2-compile.xml .
-    pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 15 -x -m "perf" --timeout=60 \
+    LLK_RESET_BETWEEN_TESTS=1 pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 1 -x -m "perf" --timeout=60 \
       --splits 5 --group 2 \
       --junitxml=pytest-report-blackhole-2-run.xml .
     junitparser merge pytest-report-blackhole-2-compile.xml pytest-report-blackhole-2-run.xml pytest-report-blackhole-2.xml
   skus:
     bh_p150b_civ2:
-      timeout: 107
+      timeout: 240
   owner_id: U07J3K6KS1K
 
 - name: llk_perf_blackhole group 3/5
@@ -163,13 +163,13 @@
     pytest $PYTEST_COMPILE_EXTRA --speed-of-light --compile-producer -n 10 -m "perf" --timeout=60 \
       --splits 5 --group 3 \
       --junitxml=pytest-report-blackhole-3-compile.xml .
-    pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 15 -x -m "perf" --timeout=60 \
+    LLK_RESET_BETWEEN_TESTS=1 pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 1 -x -m "perf" --timeout=60 \
       --splits 5 --group 3 \
       --junitxml=pytest-report-blackhole-3-run.xml .
     junitparser merge pytest-report-blackhole-3-compile.xml pytest-report-blackhole-3-run.xml pytest-report-blackhole-3.xml
   skus:
     bh_p150b_civ2:
-      timeout: 107
+      timeout: 240
   owner_id: U07J3K6KS1K
 
 - name: llk_perf_blackhole group 4/5
@@ -184,13 +184,13 @@
     pytest $PYTEST_COMPILE_EXTRA --speed-of-light --compile-producer -n 10 -m "perf" --timeout=60 \
       --splits 5 --group 4 \
       --junitxml=pytest-report-blackhole-4-compile.xml .
-    pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 15 -x -m "perf" --timeout=60 \
+    LLK_RESET_BETWEEN_TESTS=1 pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 1 -x -m "perf" --timeout=60 \
       --splits 5 --group 4 \
       --junitxml=pytest-report-blackhole-4-run.xml .
     junitparser merge pytest-report-blackhole-4-compile.xml pytest-report-blackhole-4-run.xml pytest-report-blackhole-4.xml
   skus:
     bh_p150b_civ2:
-      timeout: 107
+      timeout: 240
   owner_id: U07J3K6KS1K
 
 - name: llk_perf_blackhole group 5/5
@@ -205,11 +205,11 @@
     pytest $PYTEST_COMPILE_EXTRA --speed-of-light --compile-producer -n 10 -m "perf" --timeout=60 \
       --splits 5 --group 5 \
       --junitxml=pytest-report-blackhole-5-compile.xml .
-    pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 15 -x -m "perf" --timeout=60 \
+    LLK_RESET_BETWEEN_TESTS=1 pytest $PYTEST_RUN_EXTRA --speed-of-light --compile-consumer -n 1 -x -m "perf" --timeout=60 \
       --splits 5 --group 5 \
       --junitxml=pytest-report-blackhole-5-run.xml .
     junitparser merge pytest-report-blackhole-5-compile.xml pytest-report-blackhole-5-run.xml pytest-report-blackhole-5.xml
   skus:
     bh_p150b_civ2:
-      timeout: 107
+      timeout: 240
   owner_id: U07J3K6KS1K

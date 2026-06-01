@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import signal
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -605,6 +606,21 @@ def pytest_runtest_setup(item):
 def pytest_sessionstart(session):
     if hasattr(session.config, "workerinput"):
         return
+
+
+@pytest.fixture(autouse=True)
+def _reset_board_between_perf_tests(request):
+    # Temp fix for post-brisc.cpp-rewrite BH perf noise (post-2026-03-26):
+    # `tt-smi -r 0` before each perf test eliminates the sparse-catastrophic
+    # matmul drift and broader reduce/tilize/transpose drift seen comparing
+    # same-sha consecutive BH nightlies. Gated by env var so the workflow can
+    # toggle it off without another PR; scoped to the `perf` marker so non-perf
+    # runs are untouched even if the env var leaks in.
+    if os.environ.get("LLK_RESET_BETWEEN_TESTS") != "1":
+        return
+    if request.node.get_closest_marker("perf") is None:
+        return
+    subprocess.run(["tt-smi", "-r", "0"], check=True)
 
 
 @pytest.fixture(scope="module", autouse=True)
