@@ -6,7 +6,6 @@
 #include "api/dataflow/dataflow_api.h"
 #include "api/debug/assert.h"
 #include "api/debug/dprint.h"
-#include "tt_metal/fabric/hw/inc/fabric_routing_mode.h"
 #include "tt_metal/fabric/hw/inc/tt_fabric_api.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/fabric_connection_manager.hpp"
 #include "ttnn/operations/ccl/common/kernels/moe_utils.hpp"
@@ -213,28 +212,18 @@ void kernel_main() {
         }
         uint32_t distance = route_info[1];
         uint32_t output_page_idx = route_info[2];
-        uint32_t dst_chip_device_id = 0;
-        if constexpr (
-            std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::HybridMeshPacketHeader> ||
-            std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
-            // 2D: reader stashes dst_chip in route_info[3] so we can index dest_chip_ids/dest_mesh_ids.
-            // Read before cb_pop_front since route_info becomes invalid afterward.
-            dst_chip_device_id = route_info[3];
-        }
-        cb_pop_front(cb_route_info_id, 1);
-
-        cb_wait_front(cb_output_for_writer_id, 1);
-        uint32_t output_data_addr = get_read_ptr(cb_output_for_writer_id);
-
-        DPRINT_COMBINE("Fabric send: route={} distance={} page_idx={}\n", route, distance, output_page_idx);
 
 #ifdef DEST_CHIP_ID
-        // Under 2D recompute EDM direction from the destination — see note in writer_dispatch.cpp.
+        // CB layout (written by reader_combine): [0]=route (1D EDM index), [1]=distance_hops,
+        // [2]=page_idx, [3]=dst_chip_index (2D only). Capture per-iteration route state from the
+        // CB BEFORE cb_pop_front invalidates the pointer; under 2D recompute the EDM direction
+        // from the destination since route_info[0] is 1D-style and doesn't match the 2D index.
         ccl_routing_utils::line_unicast_route_info_t pkt_route_info{};
         uint32_t fabric_route;
         if constexpr (
             std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::HybridMeshPacketHeader> ||
             std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
+            const uint32_t dst_chip_device_id = route_info[3];
             pkt_route_info.dst_chip_id = dest_chip_ids[dst_chip_device_id];
             pkt_route_info.dst_mesh_id = dest_mesh_ids[dst_chip_device_id];
             fabric_route = static_cast<uint32_t>(
@@ -243,8 +232,17 @@ void kernel_main() {
             pkt_route_info.distance_in_hops = static_cast<uint16_t>(distance);
             fabric_route = route;
         }
+#endif
+        cb_pop_front(cb_route_info_id, 1);
 
-        ccl_routing_utils::fabric_set_line_unicast_route(unicast_packet_header, pkt_route_info);
+        cb_wait_front(cb_output_for_writer_id, 1);
+        uint32_t output_data_addr = get_read_ptr(cb_output_for_writer_id);
+
+        DPRINT_COMBINE("Fabric send: route={} distance={} page_idx={}\n", route, distance, output_page_idx);
+
+#ifdef DEST_CHIP_ID
+        ccl_routing_utils::fabric_set_line_unicast_route(
+            pkt_hdr_for_route_helper(unicast_packet_header), pkt_route_info);
         fabric_send_noc_unicast<fabric_max_packet_size>(
             output_addr_gen,
             fabric_connections[fabric_route],

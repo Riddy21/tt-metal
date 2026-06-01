@@ -6,7 +6,6 @@
 #include "api/dataflow/dataflow_api.h"
 #include "api/debug/dprint.h"
 #include "api/debug/assert.h"
-#include "tt_metal/fabric/hw/inc/fabric_routing_mode.h"
 #include "tt_metal/fabric/hw/inc/tt_fabric_api.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/fabric_connection_manager.hpp"
 #include "ttnn/operations/ccl/common/kernels/moe_utils.hpp"
@@ -189,14 +188,27 @@ void kernel_main() {
         }
         uint32_t distance = route_info[1];
         uint32_t page_idx = route_info[2];
-        uint32_t dst_chip_device_id = 0;
+
+#ifdef DEST_CHIP_ID
+        // CB layout (written by reader_dispatch): [0]=route (1D EDM index), [1]=distance_hops,
+        // [2]=page_idx, [3]=dst_chip_index (2D only). Capture per-iteration route state from the
+        // CB BEFORE cb_pop_front invalidates the pointer; under 2D recompute the EDM direction
+        // from the destination since route_info[0] is 1D-style and doesn't match the 2D index.
+        ccl_routing_utils::line_unicast_route_info_t pkt_route_info{};
+        uint32_t fabric_route;
         if constexpr (
             std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::HybridMeshPacketHeader> ||
             std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
-            // 2D: reader stashes expert_chip in route_info[3] so we can index dest_chip_ids/dest_mesh_ids.
-            // Read before cb_pop_front since route_info becomes invalid afterward.
-            dst_chip_device_id = route_info[3];
+            const uint32_t dst_chip_device_id = route_info[3];
+            pkt_route_info.dst_chip_id = dest_chip_ids[dst_chip_device_id];
+            pkt_route_info.dst_mesh_id = dest_mesh_ids[dst_chip_device_id];
+            fabric_route = static_cast<uint32_t>(
+                get_next_hop_router_direction(dest_mesh_ids[dst_chip_device_id], dest_chip_ids[dst_chip_device_id]));
+        } else {
+            pkt_route_info.distance_in_hops = static_cast<uint16_t>(distance);
+            fabric_route = route;
         }
+#endif
         cb_pop_front(cb_route_info_id, 1);
 
         cb_wait_front(cb_payload_for_writer_id, 1);
@@ -207,24 +219,9 @@ void kernel_main() {
         DPRINT_DISPATCH("Fabric send: route={} distance={} page_idx={}\n", route, distance, page_idx);
 
 #ifdef DEST_CHIP_ID
-        // Recompute the EDM direction from the destination under 2D — the reader's 1D-style
-        // route_info[0] doesn't match the 2D physical EDM index. Under 1D fabric_route == route.
-        ccl_routing_utils::line_unicast_route_info_t pkt_route_info{};
-        uint32_t fabric_route;
-        if constexpr (
-            std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::HybridMeshPacketHeader> ||
-            std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
-            pkt_route_info.dst_chip_id = dest_chip_ids[dst_chip_device_id];
-            pkt_route_info.dst_mesh_id = dest_mesh_ids[dst_chip_device_id];
-            fabric_route = static_cast<uint32_t>(
-                get_next_hop_router_direction(dest_mesh_ids[dst_chip_device_id], dest_chip_ids[dst_chip_device_id]));
-        } else {
-            pkt_route_info.distance_in_hops = static_cast<uint16_t>(distance);
-            fabric_route = route;
-        }
-
         // Send payload
-        ccl_routing_utils::fabric_set_line_unicast_route(unicast_packet_header, pkt_route_info);
+        ccl_routing_utils::fabric_set_line_unicast_route(
+            pkt_hdr_for_route_helper(unicast_packet_header), pkt_route_info);
         fabric_send_noc_unicast<fabric_max_packet_size>(
             output_addr_gen,
             fabric_connections[fabric_route],
@@ -235,7 +232,8 @@ void kernel_main() {
             l1_alignment);
 
         // Send metadata
-        ccl_routing_utils::fabric_set_line_unicast_route(unicast_packet_header, pkt_route_info);
+        ccl_routing_utils::fabric_set_line_unicast_route(
+            pkt_hdr_for_route_helper(unicast_packet_header), pkt_route_info);
         fabric_send_noc_unicast<fabric_max_packet_size>(
             metadata_addr_gen,
             fabric_connections[fabric_route],

@@ -784,6 +784,20 @@ inline void fabric_send_chip_unicast_noc_unicast_semaphore_only_1d(
         reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
 }
 
+// UDM compat shim for ccl_routing_utils::fabric_set_line_unicast_route. That helper's 2D arm
+// matches via std::is_same_v<HybridMeshPacketHeader>, which won't match UDMHybridMeshPacketHeader
+// (a subclass). Slice the pointer to HybridMesh* so the existing 2D arm catches it. No-op for
+// HybridMesh and LowLatency. Returning auto* keeps the non-UDM branch's volatile-qualified type
+// intact.
+template <typename HdrT>
+FORCE_INLINE auto* pkt_hdr_for_route_helper(volatile HdrT* hdr) {
+    if constexpr (std::is_same_v<HdrT, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
+        return reinterpret_cast<volatile tt::tt_fabric::HybridMeshPacketHeader*>(hdr);
+    } else {
+        return hdr;
+    }
+}
+
 // Portable fabric send for NOC unicast semaphore increment. Single code path under both
 // FABRIC_1D and FABRIC_2D: dispatches on PACKET_HEADER_TYPE via ccl_routing_utils to set up
 // the route, then issues the send via the linear/api.h portable entry point. Replaces the
@@ -828,7 +842,7 @@ inline void fabric_send_chip_unicast_noc_unicast_semaphore_only_portable(
         num_hops = static_cast<uint8_t>(distance);
     }
 
-    ccl_routing_utils::fabric_set_line_unicast_route(packet_header, route_info);
+    ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_for_route_helper(packet_header), route_info);
     tt::tt_fabric::linear::experimental::fabric_unicast_noc_unicast_atomic_inc(
         &fabric_connections[route], packet_header, cmd_header, num_hops);
 }

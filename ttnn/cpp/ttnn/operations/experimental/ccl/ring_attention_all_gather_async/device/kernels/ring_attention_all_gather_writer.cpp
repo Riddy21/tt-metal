@@ -4,7 +4,6 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/fabric_connection_manager.hpp"
-#include "tt_metal/fabric/hw/inc/fabric_routing_mode.h"
 #include "tt_metal/fabric/hw/inc/linear/api.h"
 #include "tt_metal/fabric/hw/inc/noc_addr.h"
 #include "tt_metal/fabric/hw/inc/tt_fabric_api.h"
@@ -19,6 +18,19 @@
 // (templated on packet-header type). The kernel pulls dst_chip_id/dst_mesh_id from runtime
 // args and packs them into a line_unicast_route_info_t once; under 1D the helper reads
 // route_info.distance_in_hops, under 2D it reads route_info.dst_chip_id + dst_mesh_id.
+
+// UDM compat shim for ccl_routing_utils::fabric_set_line_unicast_route — see moe_utils.hpp's
+// helper of the same name. Slice a UDMHybridMeshPacketHeader pointer down to HybridMesh* so the
+// is_same_v<HybridMesh> arm in fabric_set_line_unicast_route catches it. No-op for HybridMesh
+// and LowLatency.
+template <typename HdrT>
+FORCE_INLINE auto* pkt_hdr_for_route_helper(volatile HdrT* hdr) {
+    if constexpr (std::is_same_v<HdrT, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
+        return reinterpret_cast<volatile tt::tt_fabric::HybridMeshPacketHeader*>(hdr);
+    } else {
+        return hdr;
+    }
+}
 
 using address_t = uint32_t;
 using ttnn::ccl::Topology;
@@ -94,7 +106,7 @@ void kernel_main() {
         std::is_same_v<PACKET_HEADER_TYPE, tt::tt_fabric::UDMHybridMeshPacketHeader>) {
         route_info.dst_chip_id = fabric_dst_chip_id;
     } else {
-        route_info.distance_in_hops = 1;
+        route_info.distance_in_hops = 1;  // ring-AG only sends to the immediate neighbor
     }
     /* Args for overlapped all gather */
     OpSignaler op_signaler_sender;
@@ -122,7 +134,7 @@ void kernel_main() {
     constexpr uint32_t num_targets_in_direction =
         direction == 1 ? num_targets_backward_direction : num_targets_forward_direction;
     if constexpr (num_targets_in_direction > 0) {
-        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr, route_info);
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_for_route_helper(pkt_hdr), route_info);
     }
 
     fabric_connection.open();
@@ -237,9 +249,11 @@ void kernel_main() {
     const auto sem_inc_cmd_header =
         tt::tt_fabric::NocUnicastAtomicIncCommandHeader{out_ready_sem_noc_addr_in_pkt, static_cast<uint32_t>(1)};
 
-    // Write the unicast packet
+    // Write the unicast packet. num_hops=1 is correct under both topologies: 1D ring-AG always
+    // targets the immediate neighbor; 2D ignores num_hops (HybridMesh::to_chip_unicast is a no-op
+    // and route_info carries the 2D destination).
     if constexpr (num_targets_in_direction) {
-        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_sem_inc, route_info);
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_for_route_helper(pkt_hdr_sem_inc), route_info);
         tt::tt_fabric::linear::experimental::fabric_unicast_noc_unicast_atomic_inc(
             fabric_direction_connection, pkt_hdr_sem_inc, sem_inc_cmd_header, /*num_hops=*/1);
     }
@@ -347,14 +361,16 @@ void kernel_main() {
         }
 
         // 2. unicast output ready semaphore forward
-        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_sem_inc, route_info);
+        ccl_routing_utils::fabric_set_line_unicast_route(pkt_hdr_for_route_helper(pkt_hdr_sem_inc), route_info);
         tt::tt_fabric::linear::experimental::fabric_unicast_noc_unicast_atomic_inc(
             fabric_direction_connection, pkt_hdr_sem_inc, sem_inc_cmd_header, /*num_hops=*/1);
 
         slice_writes++;
     }
-    fabric_connection.close();
 
+    // Drain in-flight writes BEFORE closing the EDM connections.
     noc_async_atomic_barrier();
     noc_async_write_barrier();
+
+    fabric_connection.close();
 }
