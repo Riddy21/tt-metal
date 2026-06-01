@@ -27,6 +27,7 @@ from ttnn.experimental.moe_compute_utils import (
     prepare_w2_tensor_for_moe_compute,
     prepare_w2_tensor_with_bias,
     auto_output_width_shard_dim,
+    effective_matmul_ring_size,
     get_weight_core_shard_maps,
     get_weight_mem_configs,
     _shard_tiles,
@@ -162,7 +163,15 @@ MODELS_BH_LB_1x8 = _expand_model_configs(_MODELS_BH_LB_1x8)
 
 
 def _run_model_test(
-    mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type, bh_ring_size = 12
+    mesh_device,
+    mesh_shape,
+    enable_trace,
+    model_cfg,
+    test_mode,
+    has_bias,
+    experts_per_device,
+    activation_type,
+    bh_ring_size=12,
 ):
     if test_mode == "perf":
         selected_experts_k = 1
@@ -185,7 +194,10 @@ def _run_model_test(
         N=model_cfg.N,
         hidden_size=model_cfg.hidden_size,
         output_height_shard_dim=model_cfg.output_height_shard_dim,
-        output_width_shard_dim=auto_output_width_shard_dim(model_cfg.hidden_size),
+        output_width_shard_dim=auto_output_width_shard_dim(
+            model_cfg.hidden_size,
+            matmul_ring_size=effective_matmul_ring_size(mesh_device, bh_ring_size),
+        ),
         dtype=ttnn.bfloat16,
         enable_trace=enable_trace,
         activation_type=activation_type,
@@ -2007,12 +2019,18 @@ def test_moe_compute_1x16(
 @pytest.mark.parametrize(
     "enable_trace", [pytest.param(False, id="disable_trace"), pytest.param(True, id="enable_trace")]
 )
-@pytest.mark.parametrize(
-    "bh_ring_size", [8, 12, 16], ids=["bh_ring_size_8", "bh_ring_size_12", "bh_ring_size_16"]
-)
+@pytest.mark.parametrize("bh_ring_size", [8, 12, 16], ids=["bh_ring_size_8", "bh_ring_size_12", "bh_ring_size_16"])
 @pytest.mark.parametrize("model_cfg, test_mode, has_bias, experts_per_device, activation_type", MODELS_BH_LB_1x8)
 def test_moe_compute_bh_lb_1x8(
-    mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type, bh_ring_size
+    mesh_device,
+    mesh_shape,
+    enable_trace,
+    model_cfg,
+    test_mode,
+    has_bias,
+    experts_per_device,
+    activation_type,
+    bh_ring_size,
 ):
     """BH single Loudbox EP=8 every-chip-active end-to-end MoE test (#43444).
 
@@ -2041,7 +2059,10 @@ def test_moe_compute_bh_lb_1x8(
         N=model_cfg.N,
         hidden_size=model_cfg.hidden_size,
         output_height_shard_dim=model_cfg.output_height_shard_dim,
-        output_width_shard_dim=auto_output_width_shard_dim(model_cfg.hidden_size),
+        output_width_shard_dim=auto_output_width_shard_dim(
+            model_cfg.hidden_size,
+            matmul_ring_size=effective_matmul_ring_size(mesh_device, bh_ring_size),
+        ),
         dtype=ttnn.bfloat16,
         enable_trace=enable_trace,
         activation_type=activation_type,
@@ -2178,6 +2199,10 @@ def test_auto_output_width_shard_dim():
     assert auto_output_width_shard_dim(5120) == 4  # GLM-4.7: Ht=160
     assert auto_output_width_shard_dim(4096) == 4  # DS V4 Flash: Ht=128
     assert auto_output_width_shard_dim(7168) == 4  # Kimi K2.5: same as DS
+    # Ring-aware: GPT-OSS width=3 at N=12, falls back to 2 at N=8/16
+    assert auto_output_width_shard_dim(2880, matmul_ring_size=12) == 3
+    assert auto_output_width_shard_dim(2880, matmul_ring_size=8) == 2
+    assert auto_output_width_shard_dim(2880, matmul_ring_size=16) == 2
 
 
 def test_shard_tiles_total_always_correct():
