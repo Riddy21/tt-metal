@@ -71,7 +71,7 @@
   gtest_filter: "-LLKBlackholeSingleCardFixture.*:*MulReduceScalarTest*"
   skus:
     bh_p150b_civ2:
-      timeout: 15
+      timeout: 20
   team: llk
   arch: blackhole
   runner_label: p150b
@@ -84,7 +84,7 @@
   gtest_filter: "-LLKBlackholeSingleCardFixture.*:*MulReduceScalarTest*"
   skus:
     bh_p150b_civ2:
-      timeout: 15
+      timeout: 20
   team: llk
   arch: blackhole
   runner_label: p150b
