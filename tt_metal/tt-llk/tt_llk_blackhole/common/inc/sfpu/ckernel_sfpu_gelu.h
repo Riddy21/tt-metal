@@ -49,15 +49,6 @@ inline void _calculate_gelu_appx_()
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++)
     {
-        // sfpi::vFloat in = sfpi::dst_reg[0];
-        // sfpi::vFloat result = calculate_gelu_core<APPROXIMATION_MODE>(in);
-
-        // sfpi::vFloat half_in = in * half;
-        // result = lut(result, l0, l1, l2);
-        // result = half_in * result + half_in;
-
-        // sfpi::dst_reg[0] = result;
-
         sfpi::vFloat in      = sfpi::dst_reg[0];
         sfpi::vFloat half    = sfpi::vConstFloatPrgm0;
         sfpi::vFloat half_in = in * half;
@@ -65,15 +56,7 @@ inline void _calculate_gelu_appx_()
         result               = half_in + result;
 
         sfpi::dst_reg[0] = result;
-
         sfpi::dst_reg++;
-
-        // sfpi::dst_reg++;
-        // TTI_SFPLOAD(3, 0, 1/*load addr mode*/,0);    // load from dest
-        ////TTI_SFPMUL(3,11,9,7,0);           // lreg7 = 0.5*lreg3
-        // TTI_SFPLUTFP32(7, 2);                // lreg7= LUT(3)
-        // TTI_SFPMAD(3,12,7,3,0);            // lreg3 = 0.5*lreg3+lregm7
-        // TTI_SFPSTORE(3, 0, 3/*store_addr_mod3*/, 0);   // and INCRWC by 4 using mode 3
     }
 
     sfpi::l_reg[sfpi::LRegs::LReg0] = l0;
@@ -84,6 +67,12 @@ inline void _calculate_gelu_appx_()
     sfpi::l_reg[sfpi::LRegs::LReg6] = l6;
 }
 
+// Legacy LLK "accurate" path: degree-5 two-region CDF approximation.
+// NOTE: The wrapper layer (calculate_gelu in ckernel_sfpu_gelu.h) bypasses this
+// function entirely for APPROXIMATION_MODE=false — it uses the higher-quality
+// calculate_gelu_piecewise (degree-15 polynomial + Moroz exp tail, Max ULP=1).
+// This function is only reachable if _calculate_gelu_<false> is called directly,
+// which no current caller does.
 template <int ITERATIONS>
 inline void _calculate_gelu_accurate_()
 {
@@ -185,24 +174,13 @@ inline void _init_gelu_()
 {
     sfpi::vConstFloatPrgm0 = 0.5f;
 
-    // // >= 3.0f
-    // lreg2_hi=0.50;//3800
-    // lreg6_hi=0.0f;//7c00
-    // // 2.0f -> 3.0f
-    // lreg2_lo= 0.5402f;//3852
-    // lreg6_lo= -0.1194f;//AFA4
-    // // 1.5f -> 2.0f
-    // lreg1_hi= .6099f; //38E1
-    // lreg5_hi= -.2635f; //B437
-    // // 1.0f -> 1.5f
-    // lreg1_lo=0.6189;//38F3
-    // lreg5_lo=-.2797;//B479
-    // // 0.5f -> 1.0f
-    // lreg0_hi=.4939f;//37E7
-    // lreg4_hi=-.1605f;//B122
-    // // 0.0f -> 0.5f
-    // lreg0_lo=0.1928f;//322B
-    // lreg4_lo=-0.0150f;//A3AE
+    // LUT segments (6-entry piecewise linear, each hi/lo pair packed into one imm32):
+    // [0.0, 0.5): slope=0.1928, intercept=-0.0150  (lreg0)
+    // [0.5, 1.0): slope=0.4939, intercept=-0.1605  (lreg0 hi / lreg4 hi)
+    // [1.0, 1.5): slope=0.6189, intercept=-0.2797  (lreg1)
+    // [1.5, 2.0): slope=0.6099, intercept=-0.2635  (lreg1 hi / lreg5 hi)
+    // [2.0, 3.0): slope=0.5402, intercept=-0.1194  (lreg2)
+    // [3.0, ∞):   slope=0.5,    intercept=0.0      (lreg2 hi / lreg6 hi)
     _sfpu_load_imm32_(0, 0x37E7322B);
     _sfpu_load_imm32_(4, 0xB12286D8);
 
