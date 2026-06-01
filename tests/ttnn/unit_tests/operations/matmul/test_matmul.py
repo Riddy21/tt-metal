@@ -3819,7 +3819,7 @@ def test_matmul_activation_rejected_on_multicore_reuse_program_config(device):
         per_core_N=n // 32,
     )
 
-    with pytest.raises(RuntimeError, match="Fused activation is not supported for this matmul program config"):
+    with pytest.raises(RuntimeError, match="Fused activation is not supported for this matmul program config:"):
         ttnn.matmul(
             in0,
             in1,
