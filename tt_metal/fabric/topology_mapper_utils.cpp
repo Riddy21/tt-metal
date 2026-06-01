@@ -1767,7 +1767,7 @@ void add_rank_binding_constraints(
                         continue;
                     }
                     for (const auto& [asic_id, asic_pos] : config.asic_positions) {
-                        if (asic_pos.first == position.first && asic_pos.second == position.second) {
+                        if (asic_pos == position) {
                             rank_pool.insert(asic_id);
                         }
                     }
