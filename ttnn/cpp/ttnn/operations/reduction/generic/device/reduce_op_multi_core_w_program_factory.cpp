@@ -102,12 +102,21 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     const bool use_post_mul = operation_attributes.post_mul_scaler != 1.0f;
     uint32_t post_mul_scaler_bits = std::bit_cast<uint32_t>(operation_attributes.post_mul_scaler);
 
+    // Int32 and Float32 max/min use the SFPU reduce path.
+    //  - Int32: GMPOOL has no Int32 support at all.
+    //  - Float32: GMPOOL feeds SrcA/SrcB which truncates to bf16, losing fp32 precision.
+    // The host already lowers reduce_min to math_op=MAX + negate=true (see reduce_op.cpp::reduce_min),
+    // so this single check covers both MAX and MIN.
+    const bool use_sfpu_reduce_path = (a.dtype() == DataType::INT32 || a.dtype() == DataType::FLOAT32) &&
+                                      operation_attributes.math_op == ReduceOpMath::MAX;
+    const bool use_fpu_negate = operation_attributes.negate && !use_sfpu_reduce_path;
+
     std::vector<uint32_t> reader_compile_time_args = {std::bit_cast<uint32_t>(operation_attributes.scaler)};
     TensorAccessorArgs(a).append_to(reader_compile_time_args);
     std::vector<uint32_t> writer_compile_time_args = {static_cast<uint32_t>(output_cb_index)};
     TensorAccessorArgs(output).append_to(writer_compile_time_args);
 
-    if (operation_attributes.negate) {
+    if (use_fpu_negate) {
         uint32_t acc_cb_index = tt::CBIndex::c_4;
         uint32_t num_acc_tiles = 1;
         desc.cbs.push_back(CBDescriptor{
@@ -139,6 +148,19 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
         reduce_defines["REDUCE_POST_MUL"] = "1";
     }
 
+    if (use_sfpu_reduce_path) {
+        reduce_defines["REDUCE_FORMAT"] = a.dtype() == DataType::INT32 ? "DataFormat::Int32" : "DataFormat::Float32";
+        reduce_defines["REDUCE_SFPU_PATH"] = "1";
+    }
+
+    // Float32 SFPU reduce must unpack source tiles straight into the fp32 DST register.
+    // Without this, the unpacker rounds Float32 -> Tf32/bf16 before SFPU sees the data,
+    // silently destroying mantissa precision.
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+    if (use_sfpu_reduce_path && a.dtype() == DataType::FLOAT32) {
+        unpack_to_dest_mode[src0_cb_index] = UnpackToDestMode::UnpackToDestFp32;
+    }
+
     KernelDescriptor reader_desc;
     reader_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/dataflow/"
@@ -165,6 +187,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
         post_mul_scaler_bits,       // packed fp32 user scalar (only used if REDUCE_POST_MUL is set)
     };
 
+    // reduce.cpp is REDUCE_FORMAT-aware; MIN uses -MAX(-x) in reduce_w_neg.
     const std::string compute_kernel =
         std::string("ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/compute/reduce") +
         (operation_attributes.negate ? "_w_neg" : "") + ".cpp";
@@ -178,6 +201,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
     compute_desc_g1.config = ComputeConfigDescriptor{
         .math_fidelity = math_fidelity,
         .fp32_dest_acc_en = fp32_dest_acc_en,
+        .unpack_to_dest_mode = unpack_to_dest_mode,
     };
 
     std::optional<KernelDescriptor> compute_desc_g2;
@@ -198,6 +222,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreWProgramFa
         d.config = ComputeConfigDescriptor{
             .math_fidelity = math_fidelity,
             .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
         };
         compute_desc_g2 = std::move(d);
     }
