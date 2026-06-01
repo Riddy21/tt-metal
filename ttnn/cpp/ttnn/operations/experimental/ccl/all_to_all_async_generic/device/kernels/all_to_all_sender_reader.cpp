@@ -26,6 +26,7 @@ constexpr uint32_t dst_inner_dims_size = get_compile_time_arg_val(10);
 
 template <typename AddrGenType>
 void read_data(
+    const Noc& noc,
     uint32_t device_id,
     uint32_t tile_id,
     uint32_t cb_id,
@@ -42,7 +43,6 @@ void read_data(
             l1_write_addr,
             input_page_size / 2);
         // Zero-fill the second half of the tile within the CB.
-        Noc noc;
         CircularBuffer cb(cb_id);
         const uint32_t cb_base = get_write_ptr(cb_id);
         noc.async_write_zeros(
@@ -93,6 +93,7 @@ void kernel_main() {
     constexpr uint32_t split_num_tiles = (split_num_half_tiles + 1) / 2;
     constexpr bool has_pre_half_tile = has_writer_tail && current_device_id % 2 == 1;
     constexpr bool has_post_half_tile = has_writer_tail && current_device_id % 2 == 0;
+    Noc noc;
 
     for (uint32_t did = 0; did < local_num_devices; ++did) {
         int32_t device_offset = get_arg_val<int32_t>(arg_idx++);
@@ -126,6 +127,7 @@ void kernel_main() {
             // If package is full, flush and start new package
             if (current_tile == 4 || current_package_payload + payload_size > 2 * input_page_size) {
                 noc_async_read_barrier();
+                noc.write_zeros_l1_barrier();
                 cb_push_back(cb0_id, 1);
                 cb_reserve_back(cb0_id, 1);
                 l1_write_addr = get_write_ptr(cb0_id);
@@ -134,6 +136,7 @@ void kernel_main() {
             }
 
             read_data(
+                noc,
                 device_id,
                 tile_id,
                 cb0_id,
@@ -151,6 +154,7 @@ void kernel_main() {
         // Flush remaining tiles in the last package
         if (current_tile > 0) {
             noc_async_read_barrier();
+            noc.write_zeros_l1_barrier();
         }
         cb_push_back(cb0_id, 1);
     }
