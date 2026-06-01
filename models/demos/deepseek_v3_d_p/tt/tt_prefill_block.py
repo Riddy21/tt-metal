@@ -41,7 +41,7 @@ class TtPrefillBlock(LightweightModule):
 
     @staticmethod
     def check_cache_complete(cache_path: Path, layer_idx: int, is_dense: bool, experts_per_chip: int = 8) -> bool:
-        """Check if block cache is complete (full block: attn_norm + MLA + ffn_norm + FFN/MoE)."""
+        """Check if block cache is complete (norms + MLA + FFN/MoE)."""
         prefix = f"layer_{layer_idx}"
 
         if not TtDistributedRmsNorm.check_cache_complete(cache_path, f"{prefix}.attn_norm"):

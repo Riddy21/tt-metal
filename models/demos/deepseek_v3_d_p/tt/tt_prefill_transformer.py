@@ -156,8 +156,8 @@ class TtPrefillTransformer(LightweightModule):
         # When `kv_only_last_layer`, the last block is constructed with
         # `kv_only=True`: only attn_norm + the KV branch of MLA are built.
         self.layers = []
-        for i in range(num_layers):
-            is_last = i == num_layers - 1
+        for i in range(self.num_layers):
+            is_last = i == self.num_layers - 1
             # Get layer weights or empty dict if loading from cache
             layer_state = state_dict["layers"][i] if state_dict.get("layers") else {}
             layer = TtPrefillBlock(

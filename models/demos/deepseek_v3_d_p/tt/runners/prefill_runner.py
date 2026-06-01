@@ -27,6 +27,10 @@ NUM_LAYERS = int(os.environ.get("PREFILL_NUM_LAYERS", 61))
 MAX_SEQ_LEN = int(os.environ.get("PREFILL_MAX_SEQ_LEN", 3200 * _sp))
 IS_BALANCED = os.environ.get("PREFILL_IS_BALANCED", "1") == "1"
 CAPACITY_FACTOR = int(os.environ.get("PREFILL_CAPACITY_FACTOR", 8))
+GATE_FALLBACK_MODE = os.environ.get("PREFILL_GATE_FALLBACK_MODE", "DEVICE_FP32")
+# When on (default), the last transformer layer runs kv-only: it fills the KV
+# cache for migration and skips its Q/SDPA/wo, FFN/MoE, final norm, and LM head.
+KV_ONLY_LAST_LAYER = os.environ.get("PREFILL_KV_ONLY_LAST_LAYER", "1") == "1"
 PREFILL_DEBUG = os.environ.get("PREFILL_DEBUG", "0") == "1"
 
 _shutdown = False
@@ -42,7 +46,7 @@ def _is_shutdown() -> bool:
 
 
 def _load_hf_config():
-    model_path = os.environ.get("DEEPSEEK_V3_HF_MODEL") or "models/demos/deepseek_v3/reference"
+    model_path = os.environ.get("DEEPSEEK_V3_HF_MODEL", DEFAULT_HF_MODEL)
     logger.info(f"Loading HF config from {model_path}")
     return AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
@@ -69,6 +73,7 @@ def _open_mesh_device():
 
 DEFAULT_TTNN_CACHE = "/mnt/models/DeepSeek-R1-0528-Cache/DeepSeek-R1-0528-Cache-prefill_secure"
 DEFAULT_HOST_REF_CACHE = "/tmp/prefill_ref_cache"
+DEFAULT_HF_MODEL = "models/demos/deepseek_v3/reference"
 
 # TtPrefillTransformer reads these env vars directly and aborts if unset.
 # Export defaults here so the runner works without the caller having to set them.
@@ -136,9 +141,10 @@ def run_standalone_loop(pipeline: TtDeepSeekPrefillPipeline) -> None:
 
     num_iterations = int(os.environ.get("PREFILL_STANDALONE_ITERS", "1"))
     iter_times_ms = []
+    first_token = None
     for i in range(num_iterations):
         _t0 = _time.perf_counter()
-        pipeline.prefill(token_ids=token_ids, slot_id=0, actual_isl=actual_isl)
+        first_token = pipeline.prefill(token_ids=token_ids, slot_id=0, actual_isl=actual_isl)
         _dt_ms = (_time.perf_counter() - _t0) * 1000.0
         iter_times_ms.append(_dt_ms)
         logger.info(
@@ -146,7 +152,12 @@ def run_standalone_loop(pipeline: TtDeepSeekPrefillPipeline) -> None:
             f"pipeline.prefill() = {_dt_ms:.2f} ms"
         )
     logger.info(f"[iter timing summary] per-iter ms = {[round(t,2) for t in iter_times_ms]}")
-    print(f"[standalone] task_id={task_id} done")
+
+    # first_token is None when kv_only_last_layer is on (the default) — the LM
+    # head is skipped, so there is no sampled token to report.
+    if first_token:
+        logger.info(f"[standalone] task_id={task_id} first_token={first_token}")
+        print(f"[standalone] task_id={task_id} first_token={first_token} done")
 
 
 def run_request_loop(pipeline: TtDeepSeekPrefillPipeline) -> None:
@@ -228,17 +239,17 @@ def run_request_loop(pipeline: TtDeepSeekPrefillPipeline) -> None:
 
 def _print_config() -> None:
     """Print all env var values at startup so the config is visible in logs."""
-    UNSET = "<NOT SET>"
     rows = [
-        ("DEEPSEEK_V3_HF_MODEL", os.environ.get("DEEPSEEK_V3_HF_MODEL", UNSET)),
+        ("DEEPSEEK_V3_HF_MODEL", os.environ.get("DEEPSEEK_V3_HF_MODEL", DEFAULT_HF_MODEL)),
         ("TT_DS_PREFILL_TTNN_CACHE", os.environ.get("TT_DS_PREFILL_TTNN_CACHE", DEFAULT_TTNN_CACHE)),
-        ("TT_IPC_SHM_C2P", os.environ.get("TT_IPC_SHM_C2P", UNSET)),
         ("PREFILL_SP", str(_sp)),
         ("PREFILL_TP", str(_tp)),
         ("PREFILL_NUM_LAYERS", str(NUM_LAYERS)),
         ("PREFILL_MAX_SEQ_LEN", str(MAX_SEQ_LEN)),
         ("PREFILL_IS_BALANCED", str(IS_BALANCED)),
         ("PREFILL_CAPACITY_FACTOR", str(CAPACITY_FACTOR)),
+        ("PREFILL_GATE_FALLBACK_MODE", GATE_FALLBACK_MODE),
+        ("PREFILL_KV_ONLY_LAST_LAYER", str(KV_ONLY_LAST_LAYER)),
         ("PREFILL_STANDALONE", os.environ.get("PREFILL_STANDALONE", "0")),
         ("PREFILL_STANDALONE_INPUT", os.environ.get("PREFILL_STANDALONE_INPUT", "<default>")),
         ("PREFILL_STANDALONE_ITERS", os.environ.get("PREFILL_STANDALONE_ITERS", "1")),
@@ -307,8 +318,9 @@ def main() -> None:
         is_balanced=IS_BALANCED,
         num_links=2,
         capacity_factor=CAPACITY_FACTOR,
-        gate_fallback_mode=GateComputeMode.DEVICE_FP32,
+        gate_fallback_mode=GateComputeMode[GATE_FALLBACK_MODE],
         weight_cache_path=cache_path,
+        kv_only_last_layer=KV_ONLY_LAST_LAYER,
     )
 
     pipeline = TtDeepSeekPrefillPipeline(

@@ -538,7 +538,7 @@ class ttMLA:
         num_heads_local = self.num_heads // self.tp_factor
         seq_len_local = hidden_states.shape[2]
 
-        # Q branch
+        # q_projection
         tt_q = ttnn.linear(
             hidden_states,
             self.q_a_proj_weight,
@@ -546,6 +546,7 @@ class ttMLA:
             **self._get_mm_kwargs("q_a_proj", seq_len_local),
         )
 
+        # All reduce (skip for single-device TP)
         if self.tp_factor > 1:
             tt_q = ttnn.experimental.reduce_scatter_minimal_async(
                 tt_q,
@@ -569,6 +570,7 @@ class ttMLA:
                 cluster_axis=self.tp_axis,
             )
 
+        # rmsnorm
         tt_q = ttnn.rms_norm(
             tt_q,
             weight=self.q_a_layernorm_weight,
@@ -583,6 +585,7 @@ class ttMLA:
             **self._get_mm_kwargs("q_b_proj", seq_len_local),
         )
 
+        # convert to
         # [batch (1), num_heads_local, seq_len_local, qk_head_dim]
         tt_q, _, _ = ttnn.experimental.nlp_create_qkv_heads(
             tt_q,
