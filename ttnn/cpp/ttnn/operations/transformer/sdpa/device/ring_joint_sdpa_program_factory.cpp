@@ -202,39 +202,47 @@ tt::tt_metal::ProgramDescriptor RingJointSDPAProgramFactory::create_descriptor(
     uint32_t kv_pad_q_new_start_nt = 0;
     uint32_t kv_pad_q_valid_nt = 0;
     if (kv_pad_rotation_enabled) {
-        const uint32_t old_capacity_nt = ring_size * q_local_padded_Nt;
-        const uint32_t old_pad_nt = old_capacity_nt > kv_actual_nt ? old_capacity_nt - kv_actual_nt : 0;
-        const uint32_t old_fill_nt = std::min(old_pad_nt, new_actual_nt);
+        const uint32_t chunk_size_nt = ring_size * q_local_padded_Nt;
+        const uint32_t first_group = kv_actual_nt / chunk_size_nt;
+        const uint32_t last_group = (logical_nt - 1) / chunk_size_nt;
+        TT_FATAL(
+            last_group <= first_group + 1,
+            "KV-pad-aware rotation expects the current valid Q to fit in one fixed global chunk. "
+            "Got kv_actual_nt={}, new_actual_nt={}, chunk_size_nt={}",
+            kv_actual_nt,
+            new_actual_nt,
+            chunk_size_nt);
 
-        const auto old_fill_on_device = [&](uint32_t chip) {
-            const uint32_t fill_start_nt = kv_actual_nt;
-            const uint32_t fill_end_nt = kv_actual_nt + old_fill_nt;
-            const uint32_t chip_start_nt = chip * q_local_padded_Nt;
-            const uint32_t chip_end_nt = chip_start_nt + q_local_padded_Nt;
-            const uint32_t start_nt = std::max(fill_start_nt, chip_start_nt);
-            const uint32_t end_nt = std::min(fill_end_nt, chip_end_nt);
-            return end_nt > start_nt ? end_nt - start_nt : 0;
+        struct Segment {
+            uint32_t start_nt = 0;
+            uint32_t count_nt = 0;
         };
 
-        kv_pad_q_old_count_nt = old_fill_on_device(device_index);
-        if (kv_pad_q_old_count_nt > 0) {
-            kv_pad_q_old_start_nt = std::max(kv_actual_nt, device_index * q_local_padded_Nt);
-        }
+        const auto intersect_device_group = [&](uint32_t group) -> Segment {
+            const uint32_t block_start_nt = group * chunk_size_nt + device_index * q_local_padded_Nt;
+            const uint32_t block_end_nt = block_start_nt + q_local_padded_Nt;
+            const uint32_t start_nt = std::max(kv_actual_nt, block_start_nt);
+            const uint32_t end_nt = std::min(logical_nt, block_end_nt);
+            if (end_nt <= start_nt) {
+                return {};
+            }
+            return Segment{start_nt, end_nt - start_nt};
+        };
 
-        uint32_t remaining_new_nt = new_actual_nt - old_fill_nt;
-        uint32_t new_prefix_nt = 0;
-        for (uint32_t chip = 0; chip < device_index && remaining_new_nt > 0; ++chip) {
-            const uint32_t chip_old_fill_nt = old_fill_on_device(chip);
-            const uint32_t chip_new_capacity_nt = q_local_padded_Nt - chip_old_fill_nt;
-            const uint32_t take_nt = std::min(chip_new_capacity_nt, remaining_new_nt);
-            new_prefix_nt += take_nt;
-            remaining_new_nt -= take_nt;
-        }
+        const Segment first_segment = intersect_device_group(first_group);
+        const Segment second_segment = last_group == first_group ? Segment{} : intersect_device_group(first_group + 1);
 
-        const uint32_t device_new_capacity_nt = q_local_padded_Nt - kv_pad_q_old_count_nt;
-        const uint32_t q_new_count_nt = std::min(device_new_capacity_nt, remaining_new_nt);
-        kv_pad_q_new_start_nt = kv_actual_nt + old_fill_nt + new_prefix_nt;
-        kv_pad_q_valid_nt = kv_pad_q_old_count_nt + q_new_count_nt;
+        kv_pad_q_old_start_nt = first_segment.start_nt;
+        kv_pad_q_old_count_nt = first_segment.count_nt;
+        kv_pad_q_new_start_nt = second_segment.start_nt;
+        kv_pad_q_valid_nt = first_segment.count_nt + second_segment.count_nt;
+        TT_FATAL(
+            kv_pad_q_valid_nt <= q_local_padded_Nt,
+            "KV-pad-aware rotation mapped more valid Q tiles to this device than its local Q slab can hold. "
+            "Got q_valid_nt={}, q_local_padded_Nt={}, device_index={}",
+            kv_pad_q_valid_nt,
+            q_local_padded_Nt,
+            device_index);
     }
 
     /*
