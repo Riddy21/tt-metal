@@ -160,43 +160,29 @@ class RotarySetup:
             chunk_size_global % (ttnn.TILE_SIZE * sp) == 0
         ), f"chunk_size_global ({chunk_size_global}) must be a multiple of TILE_SIZE * sp ({ttnn.TILE_SIZE * sp})"
 
-        # Per-chip global positions for each Q row in chip-local write order.
-        # Mirrors update_padded_kv_cache's per-chip math + the server rotation
-        # (_kv_pad_rotation_layout in test_ring_joint_sdpa_handoff.py): pad-fill
-        # rows first (in global-position order across affected chips), then NEW
-        # slabs starting from chip 0.
-        old_capacity = sp * chunk_local
-        old_pad = max(0, old_capacity - kv_actual_isl)
-        new_actual_isl = chunk_size_global  # caller's chunk_size_global may include logical pad rows; rope values for them are don't-care
-        old_fill = min(old_pad, new_actual_isl)
+        # Per-chip global position for each Q row in chip-local write order. Mirrors the
+        # writer kernel's update_idxt math (and the now-generalized ring_joint_sdpa rotation):
+        # each chip writes its chunk_local rows starting at update_idxt, and the cache cell at
+        # local row `lr` on chip c holds global position (lr // chunk_local)*chunk_size_global +
+        # c*chunk_local + (lr % chunk_local). Slab-aware: handles kv_actual_isl spanning multiple
+        # slabs (chips before the boundary jump to the next slab, the boundary chip starts at its
+        # offset and may straddle a slab, chips after stay on the current slab). Rope values for
+        # rows beyond the valid frontier are don't-care (their Q outputs are masked by SDPA).
+        boundary_slab = kv_actual_isl // chunk_size_global
+        boundary_chip = (kv_actual_isl // chunk_local) % sp
+        boundary_offset = kv_actual_isl % chunk_local
 
-        # positions[c]: list of global positions for chip c's Q rows, in chip-local row order.
         positions = [[0] * chunk_local for _ in range(sp)]
-        cursor = [0] * sp
-
-        # Phase 1: pad-fill in global-position order.
-        for i in range(old_fill):
-            gp = kv_actual_isl + i
-            chip = (gp // chunk_local) % sp
-            positions[chip][cursor[chip]] = gp
-            cursor[chip] += 1
-
-        # Phase 2: NEW-slab from chip 0 onward.
-        remaining = new_actual_isl - old_fill
-        token_idx = old_fill
-        chip = 0
-        while remaining > 0 and chip < sp:
-            gp = kv_actual_isl + token_idx
-            positions[chip][cursor[chip]] = gp
-            cursor[chip] += 1
-            token_idx += 1
-            remaining -= 1
-            if cursor[chip] == chunk_local:
-                chip += 1
-
-        # Trailing rows on any chip with cursor[c] < chunk_local are pad — rope
-        # values are don't-care, but we use 0 as a safe default so the indexed
-        # gather stays in-bounds.
+        for c in range(sp):
+            if c < boundary_chip:
+                update_idxt = (boundary_slab + 1) * chunk_local
+            elif c == boundary_chip:
+                update_idxt = boundary_slab * chunk_local + boundary_offset
+            else:
+                update_idxt = boundary_slab * chunk_local
+            for r in range(chunk_local):
+                lr = update_idxt + r
+                positions[c][r] = (lr // chunk_local) * chunk_size_global + c * chunk_local + (lr % chunk_local)
 
         cos_matrix_torch, sin_matrix_torch = get_cos_sin_matrix(self.hf_config)
 

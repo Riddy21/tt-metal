@@ -733,43 +733,33 @@ def test_mla_chunked_prefill_rotated_aligned(
 
 
 def _rotated_chip_positions(kv_actual_isl, sp, chunk_local):
-    """Per-chip global position for each chip-local Q row after the server's
-    KV-pad-aware rotation, mirroring RotarySetup.get_rope_tensors_rotated
-    EXACTLY (new_actual_isl == full physical chunk). positions[c][r] is the
-    global token position carried by chip c's r-th rotated Q row.
+    """Per-chip global position for each chip-local Q row after the server's KV-pad-aware
+    rotation, mirroring RotarySetup.get_rope_tensors_rotated (and the writer kernel) EXACTLY.
+    positions[c][r] is the global token position carried by chip c's r-th rotated Q row.
 
-    Because positions are assigned in token order (token j -> kv_actual_isl + j),
-    the first `new_actual_isl` rows in rotation order always map to the contiguous
-    valid range [kv_actual_isl, kv_actual_isl + new_actual_isl); trailing rows are
-    pad and land at strictly higher global positions (masked by causality). This
-    is why a partial chunk needs no separate new_actual_isl plumbing.
+    Slab-aware: each chip writes chunk_local rows starting at update_idxt, and the cache cell at
+    local row lr on chip c holds global position (lr // chunk_local)*chunk_size_global +
+    c*chunk_local + (lr % chunk_local). The union over all (c, r) tiles
+    [kv_actual_isl, kv_actual_isl + chunk_size_global) exactly, so the first new_actual_isl
+    positions are the contiguous valid range and the rest are pad (masked by causality) -- no
+    separate new_actual_isl plumbing needed.
     """
     chunk_size_global = sp * chunk_local
-    old_capacity = sp * chunk_local
-    old_pad = max(0, old_capacity - kv_actual_isl)
-    new_actual_isl = chunk_size_global
-    old_fill = min(old_pad, new_actual_isl)
+    boundary_slab = kv_actual_isl // chunk_size_global
+    boundary_chip = (kv_actual_isl // chunk_local) % sp
+    boundary_offset = kv_actual_isl % chunk_local
 
     positions = [[0] * chunk_local for _ in range(sp)]
-    cursor = [0] * sp
-    # Phase 1: pad-fill in global-position order (can span chips).
-    for i in range(old_fill):
-        gp = kv_actual_isl + i
-        chip = (gp // chunk_local) % sp
-        positions[chip][cursor[chip]] = gp
-        cursor[chip] += 1
-    # Phase 2: NEW-slab from chip 0 onward.
-    remaining = new_actual_isl - old_fill
-    token_idx = old_fill
-    chip = 0
-    while remaining > 0 and chip < sp:
-        gp = kv_actual_isl + token_idx
-        positions[chip][cursor[chip]] = gp
-        cursor[chip] += 1
-        token_idx += 1
-        remaining -= 1
-        if cursor[chip] == chunk_local:
-            chip += 1
+    for c in range(sp):
+        if c < boundary_chip:
+            update_idxt = (boundary_slab + 1) * chunk_local
+        elif c == boundary_chip:
+            update_idxt = boundary_slab * chunk_local + boundary_offset
+        else:
+            update_idxt = boundary_slab * chunk_local
+        for r in range(chunk_local):
+            lr = update_idxt + r
+            positions[c][r] = (lr // chunk_local) * chunk_size_global + c * chunk_local + (lr % chunk_local)
     return positions
 
 
@@ -781,17 +771,20 @@ def _rotated_chip_positions(kv_actual_isl, sp, chunk_local):
 # Parametrizing the valid list therefore lets *any* iteration be the padded /
 # rotated one — not just iter 0.
 #
-# Regime (sp=2, chunk_size_global=5120): the rope helper's rotation math is exact
-# only when each kv_actual_isl is < chunk_size_global (pad lives in the single OLD
-# slab) or slab-aligned (no rotation). The harness asserts this.
+# The rope helper + SDPA rotation are slab-aware, so kv_actual_isl may span multiple slabs (the
+# per-chip write offset is derived from kv_actual_isl // chunk_size_global). Each entry is a list
+# of per-iteration valid token counts (sp=2, chunk_size_global=5120, chunk_local=2560); the only
+# requirement is tile-alignment and fitting the cache.
 ROTATED_VALID_LISTS = [
     [2560, 5120],  # iter0partial — original 2-iter case (only iter 0 padded)
     [5120, 5120],  # allfull — both chunks full, rotation degenerates (sanity)
     [2560, 2560, 5120],  # iter1rotpartial — iter 1 is BOTH rotated AND partial
     [1280, 3840, 5120],  # iter1multichippad — iter 1 pad-fill spans both chips
     [2560, 2560],  # lastpartial — final iter partial, exactly fills the OLD slab
+    [2592, 5120, 5120],  # padded_partial — mirrors the kv-cache op test: whole-tile (1-tile)
+    # offset so the boundary chip's write straddles a slab, and kv_actual spans multiple slabs
 ]
-ROTATED_VALID_IDS = ["iter0partial", "allfull", "iter1rotpartial", "iter1multichippad", "lastpartial"]
+ROTATED_VALID_IDS = ["iter0partial", "allfull", "iter1rotpartial", "iter1multichippad", "lastpartial", "padded_partial"]
 
 
 @pytest.mark.parametrize("mesh_device", [(2, 4), (8, 4)], ids=["2x4", "8x4"], indirect=True)
@@ -829,10 +822,6 @@ def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size,
     for v in valid_per_iter:
         assert v % tile == 0 and 0 < v <= chunk_size_global, f"valid count {v} must be tile-aligned and <= {chunk_size_global}"
         assert prefix % tile == 0, f"kv_actual {prefix} must be tile-aligned"
-        assert prefix < chunk_size_global or prefix % chunk_size_global == 0, (
-            f"kv_actual {prefix} unsupported: rope rotation is exact only for "
-            f"kv_actual < chunk_size_global ({chunk_size_global}) or slab-aligned"
-        )
         kv_actuals.append(prefix)
         prefix += v
     valid_total = sum(valid_per_iter)
@@ -967,7 +956,7 @@ def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size,
             iter_natural,
             0.98,
         )
-        rot = "rotated" if 0 < kv_actual < chunk_size_global else "aligned"
+        rot = "rotated" if kv_actual % chunk_size_global != 0 else "aligned"  # mid-slab (any slab) => rotated
         logger.info(f"  iter {it} (valid {kv_actual}..{valid_end - 1}, kv_actual={kv_actual}, {rot}): PCC {msg}")
 
         ttnn.synchronize_device(mesh_device)
