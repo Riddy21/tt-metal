@@ -179,8 +179,6 @@ inline void _llk_unpack_AB_init_(const ckernel::TensorShape tensor_shape, const 
  */
 inline void _llk_unpack_AB_uninit_([[maybe_unused]] const ckernel::TensorShape unpA_tensor_shape, [[maybe_unused]] const ckernel::TensorShape unpB_tensor_shape)
 {
-    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
-    // nothing to restore here.
 }
 
 /**
@@ -356,7 +354,6 @@ inline void _llk_unpack_bcastA_B_uninit_(const std::uint32_t y_stride = FACE_R_D
 {
     // Revisit default stride value in tt-llk#1015
     cfg_reg_rmw_tensix<UNP0_ADDR_CTRL_XY_REG_1_Ystride_RMW>(y_stride);
-    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036); nothing to restore here.
 }
 
 inline void _llk_unpack_bcastA_B_(const std::uint32_t address_a, const std::uint32_t address_b, std::uint32_t srca_reuse_count = 4)

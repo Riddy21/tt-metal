@@ -210,8 +210,6 @@ __attribute__((always_inline)) inline void _llk_unpack_AB_matmul_init_(
 
 inline void _llk_unpack_AB_matmul_uninit_([[maybe_unused]] const std::uint32_t face_r_dim)
 {
-    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
-    // nothing to restore here.
 }
 
 template <std::uint32_t kernel_broadcast_a = 0, std::uint32_t kernel_broadcast_b = 0>

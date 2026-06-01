@@ -68,6 +68,7 @@ inline void _llk_pack_configure_addrmod_()
             .set(ADDR_MOD_2);
     }
 }
+
 template <PackMode pack_mode = PackMode::Default, bool zero_output = false>
 inline void _llk_pack_mop_config_(
     const std::uint32_t face_r_dim = FACE_R_DIM,
@@ -329,8 +330,6 @@ inline void pack_init_apply(
         set_packer_strides<pack_mode>(pack_src_format, tile_c_dim);
     }
 
-    // x-start/x-end is a transient state: every pack init programs the packer ADC X counter
-    // to the operand's row width (see tt-llk#1036). FACE_C_DIM - 1 is the default tile row width.
     TTI_SETADCXX(p_setadc::PAC, FACE_C_DIM - 1, 0x0);
 }
 } // namespace llk_pack_internal_bh

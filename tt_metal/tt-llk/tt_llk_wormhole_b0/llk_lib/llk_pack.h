@@ -60,6 +60,7 @@ inline std::uint32_t _llk_pack_output_size_bytes_(const std::uint32_t pack_dst_f
 
     return packed_tile_size_bytes;
 }
+
 inline std::uint32_t _llk_pack_output_addr_offset_words_(
     const std::uint32_t pack_dst_format, const std::uint32_t face_r_dim = FACE_R_DIM, const std::uint32_t num_faces = 4)
 {
@@ -262,8 +263,6 @@ inline void _llk_pack_init_(
 
 inline void _llk_pack_uninit_([[maybe_unused]] const std::uint32_t face_r_dim)
 {
-    // x-start/x-end is transient and programmed by each operation's init LLK (see tt-llk#1036);
-    // nothing to restore here.
 }
 
 template <DstSync Dst, bool is_fp32_dest_acc_en, PackMode pack_mode = PackMode::Default>
