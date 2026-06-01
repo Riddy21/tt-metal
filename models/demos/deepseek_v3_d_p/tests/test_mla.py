@@ -568,7 +568,10 @@ def test_mla_chunked_prefill(
     indirect=True,
 )
 @pytest.mark.parametrize("seq_len", [10 * 1024], ids=["seq10k"])
-@pytest.mark.parametrize("num_chunks", [2], ids=lambda n: f"N{n}")
+# N2 = 2-slab cache (old 2-iter limit); N4/N8 = larger 4-/8-slab caches that the
+# previous N_local_kv == 2*N_local_q device-op fatal rejected. kv_actual_isl walks
+# into groups 1/2/3, exercising the generalized first_group rotation offset.
+@pytest.mark.parametrize("num_chunks", [2, 4, 8], ids=lambda n: f"N{n}")
 @pytest.mark.parametrize("q_chunk_size", [32], ids=lambda q: f"q{q}")
 @pytest.mark.timeout(0)
 def test_mla_chunked_prefill_rotated_aligned(
@@ -729,13 +732,69 @@ def test_mla_chunked_prefill_rotated_aligned(
     logger.success(f"✓ Rotated-aligned chunked prefill (N={num_chunks}) wiring test passed")
 
 
-# True-rotation case: iter 0 has full physical chunk_size_global rows but only the
-# first `valid_iter0` are logically valid (rest is don't-care pad). Iter 1 then
-# runs with kv_actual_isl=valid_iter0 (mid-chunk → rotation actually kicks in:
-# pad-fill into chip 1's OLD slab + NEW-slab spill on chip 0). RoPE for iter 1 is
-# permuted per chip via get_rope_tensors_rotated so the cos/sin row at chip-local
-# position r matches the global position of that chip's r-th rotated Q row.
-@pytest.mark.parametrize("mesh_device", [(2, 4)], ids=["2x4"], indirect=True)
+def _rotated_chip_positions(kv_actual_isl, sp, chunk_local):
+    """Per-chip global position for each chip-local Q row after the server's
+    KV-pad-aware rotation, mirroring RotarySetup.get_rope_tensors_rotated
+    EXACTLY (new_actual_isl == full physical chunk). positions[c][r] is the
+    global token position carried by chip c's r-th rotated Q row.
+
+    Because positions are assigned in token order (token j -> kv_actual_isl + j),
+    the first `new_actual_isl` rows in rotation order always map to the contiguous
+    valid range [kv_actual_isl, kv_actual_isl + new_actual_isl); trailing rows are
+    pad and land at strictly higher global positions (masked by causality). This
+    is why a partial chunk needs no separate new_actual_isl plumbing.
+    """
+    chunk_size_global = sp * chunk_local
+    old_capacity = sp * chunk_local
+    old_pad = max(0, old_capacity - kv_actual_isl)
+    new_actual_isl = chunk_size_global
+    old_fill = min(old_pad, new_actual_isl)
+
+    positions = [[0] * chunk_local for _ in range(sp)]
+    cursor = [0] * sp
+    # Phase 1: pad-fill in global-position order (can span chips).
+    for i in range(old_fill):
+        gp = kv_actual_isl + i
+        chip = (gp // chunk_local) % sp
+        positions[chip][cursor[chip]] = gp
+        cursor[chip] += 1
+    # Phase 2: NEW-slab from chip 0 onward.
+    remaining = new_actual_isl - old_fill
+    token_idx = old_fill
+    chip = 0
+    while remaining > 0 and chip < sp:
+        gp = kv_actual_isl + token_idx
+        positions[chip][cursor[chip]] = gp
+        cursor[chip] += 1
+        token_idx += 1
+        remaining -= 1
+        if cursor[chip] == chunk_local:
+            chip += 1
+    return positions
+
+
+# Parametrized true-rotation case: each entry is a list of per-iteration VALID
+# token counts. Every iteration processes a physical chunk of chunk_size_global
+# rows, of which only valid_i are logically valid (the rest are server-rotation
+# pad). The cumulative valid count entering iteration i is kv_actual_isl_i; when
+# it is mid-slab (0 < kv_actual_isl_i < chunk_size_global) the rotation kicks in.
+# Parametrizing the valid list therefore lets *any* iteration be the padded /
+# rotated one — not just iter 0.
+#
+# Regime (sp=2, chunk_size_global=5120): the rope helper's rotation math is exact
+# only when each kv_actual_isl is < chunk_size_global (pad lives in the single OLD
+# slab) or slab-aligned (no rotation). The harness asserts this.
+ROTATED_VALID_LISTS = [
+    [2560, 5120],  # iter0partial — original 2-iter case (only iter 0 padded)
+    [5120, 5120],  # allfull — both chunks full, rotation degenerates (sanity)
+    [2560, 2560, 5120],  # iter1rotpartial — iter 1 is BOTH rotated AND partial
+    [1280, 3840, 5120],  # iter1multichippad — iter 1 pad-fill spans both chips
+    [2560, 2560],  # lastpartial — final iter partial, exactly fills the OLD slab
+]
+ROTATED_VALID_IDS = ["iter0partial", "allfull", "iter1rotpartial", "iter1multichippad", "lastpartial"]
+
+
+@pytest.mark.parametrize("mesh_device", [(2, 4), (8, 4)], ids=["2x4", "8x4"], indirect=True)
 @pytest.mark.parametrize(
     "device_params",
     [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}],
@@ -743,9 +802,11 @@ def test_mla_chunked_prefill_rotated_aligned(
     indirect=True,
 )
 @pytest.mark.parametrize("q_chunk_size", [32], ids=lambda q: f"q{q}")
+@pytest.mark.parametrize("valid_per_iter", ROTATED_VALID_LISTS, ids=ROTATED_VALID_IDS)
 @pytest.mark.timeout(0)
-def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size, device_params):
-    """Two-iter rotation: iter 0 partial (2560 valid + 2560 pad), iter 1 rotated."""
+def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size, valid_per_iter, device_params):
+    """N-iter KV-pad-aware rotation: per-iteration valid token counts drive which
+    iteration(s) are padded; rotation is exercised whenever a prefix lands mid-slab."""
     config, weights = request.getfixturevalue("random_weights")
 
     sp_axis = 0
@@ -755,21 +816,36 @@ def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size,
 
     mesh_shape = list(mesh_device.shape)
     sp = mesh_shape[sp_axis]
-    assert sp == 2, "this test assumes sp=2 (boundary at chip 1 with kv_actual_isl=chunk_local)"
 
     # Fixed scope for this rotation test.
     chunk_size_global = 5120
-    chunk_size_local = chunk_size_global // sp  # 2560
-    valid_iter0 = 2560  # tile-aligned partial first chunk
-    valid_iter1 = 5120  # full second chunk
-    valid_total = valid_iter0 + valid_iter1  # 7680
-    seq_len_cache = chunk_size_global * 2  # 10240 — cache fits 2 slabs per chip
+    chunk_local = chunk_size_global // sp  # 2560
+    tile = ttnn.TILE_SIZE
+
+    # Validate the parametrization against the rope helper's supported regime and
+    # derive the cumulative kv_actual_isl entering each iteration.
+    kv_actuals = []
+    prefix = 0
+    for v in valid_per_iter:
+        assert v % tile == 0 and 0 < v <= chunk_size_global, f"valid count {v} must be tile-aligned and <= {chunk_size_global}"
+        assert prefix % tile == 0, f"kv_actual {prefix} must be tile-aligned"
+        assert prefix < chunk_size_global or prefix % chunk_size_global == 0, (
+            f"kv_actual {prefix} unsupported: rope rotation is exact only for "
+            f"kv_actual < chunk_size_global ({chunk_size_global}) or slab-aligned"
+        )
+        kv_actuals.append(prefix)
+        prefix += v
+    valid_total = sum(valid_per_iter)
+    # Cache must hold the highest (kv_actual + chunk_size_global) window; round up
+    # to slab granularity. At least 2 slabs (the documented MLA rotation scope).
+    needed = max(ka + chunk_size_global for ka in kv_actuals)
+    seq_len_cache = max(chunk_size_global * 2, ((needed + chunk_size_global - 1) // chunk_size_global) * chunk_size_global)
     config.max_seq_len = seq_len_cache
 
     logger.info(
-        f"Rotated-partial chunked prefill: sp={sp}, chunk_size_global={chunk_size_global}, "
-        f"valid_iter0={valid_iter0}, valid_iter1={valid_iter1}, valid_total={valid_total}, "
-        f"q_chunk_size={q_chunk_size}"
+        f"Rotated chunked prefill: sp={sp}, chunk_size_global={chunk_size_global}, "
+        f"valid_per_iter={valid_per_iter}, kv_actuals={kv_actuals}, valid_total={valid_total}, "
+        f"seq_len_cache={seq_len_cache}, q_chunk_size={q_chunk_size}"
     )
 
     # Reference: torch MLA forward over the VALID cumulative prefix (length valid_total).
@@ -828,7 +904,7 @@ def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size,
 
     def _to_tt_hidden(host_tensor):
         # host_tensor: [1, 1, chunk_size_global, hidden_size] in chip-concat order
-        # (first chunk_size_local rows → chip 0, next chunk_size_local rows → chip 1).
+        # (first chunk_local rows → chip 0, next chunk_local rows → chip 1).
         return ttnn.from_torch(
             host_tensor,
             device=mesh_device,
@@ -840,107 +916,67 @@ def test_mla_chunked_prefill_rotated_partial(request, mesh_device, q_chunk_size,
             ),
         )
 
-    # ------------------------------------------------------------------------
-    # Iter 0: chip 0 = valid[:2560]; chip 1 = zeros (logical pad).
-    # kv_actual_isl=0 with full chunk_size_global = boundary at chip 0, rotation
-    # math degenerates to a uniform per-chip offset (slab 0). Use natural rope —
-    # chip 0's natural rope range [0, 2560) matches chip 0's valid Q positions;
-    # chip 1's rope/Q rows are pad (output discarded).
-    # ------------------------------------------------------------------------
-    iter0_h = torch.cat(
-        [
-            hidden_states_valid[:, :valid_iter0, :],
-            torch.zeros(1, chunk_size_local, config.hidden_size, dtype=torch.bfloat16),
-        ],
-        dim=1,
-    ).unsqueeze(
-        0
-    )  # [1, 1, chunk_size_global, hidden_size]
-    tt_iter0_h = _to_tt_hidden(iter0_h)
-    iter0_rope = rope_setup.get_rope_tensors(chunk_size_global, start_pos=0)
+    # Accumulated natural-order output across all iterations, filled per iter by
+    # un-rotating each chunk's valid rows back to their global positions.
+    full_out_natural = torch.zeros(1, 1, valid_total, config.hidden_size, dtype=torch.bfloat16)
 
-    tt_iter0_out = mla_tt.forward(
-        hidden_states=tt_iter0_h,
-        rope_tensors=iter0_rope,
-        kvpe_cache=tt_kvpe_cache,
-        kv_actual_isl=0,
-        num_cache_layers=1,
-        chunked_q_chunk_size=q_chunk_size,
-    )
+    for it, (kv_actual, valid) in enumerate(zip(kv_actuals, valid_per_iter)):
+        valid_end = kv_actual + valid  # exclusive global position of last valid new token + 1
 
-    iter0_out_host = ttnn.to_torch(
-        tt_iter0_out,
-        mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=out_concat_dims, mesh_shape=mesh_device.shape),
-    ).to(torch.bfloat16)
-    # iter0_out_host: [1, 1, chunk_size_global, hidden_size]. Valid rows = first chunk_size_local
-    # (chip 0's output for positions 0..2559). Chip 1's rows are from zero input — discard.
-    iter0_valid_rows = iter0_out_host[:, :, :valid_iter0, :]  # [1, 1, 2560, hidden]
-    _, msg = assert_with_pcc(
-        ref_output[:, :valid_iter0, :].unsqueeze(0),
-        iter0_valid_rows,
-        0.98,
-    )
-    logger.info(f"  iter 0 (valid 0..{valid_iter0 - 1}): PCC {msg}")
+        # Per chip-local row (chip-concat order: chip 0 rows then chip 1 rows),
+        # the global position it carries after the server rotation.
+        positions = _rotated_chip_positions(kv_actual, sp, chunk_local)
+        flat_positions = [positions[c][r] for c in range(sp) for r in range(chunk_local)]  # len chunk_size_global
 
-    ttnn.synchronize_device(mesh_device)
-    ttnn.distributed_context_barrier()
+        # Input: gather each row's hidden state from its global position; rows whose
+        # position is >= valid_end are logical pad → zeros (don't-care, masked out).
+        gather_idx = torch.tensor([min(gp, valid_total - 1) for gp in flat_positions], dtype=torch.long)
+        chunk_in = hidden_states_valid[0, gather_idx, :].clone()  # [chunk_size_global, hidden]
+        pad_mask = torch.tensor([gp >= valid_end for gp in flat_positions])
+        chunk_in[pad_mask] = 0.0
+        iter_h = chunk_in.unsqueeze(0).unsqueeze(0)  # [1, 1, chunk_size_global, hidden]
 
-    # ------------------------------------------------------------------------
-    # Iter 1: server-rotated chunk.
-    #   kv_actual_isl=2560 → boundary at chip 1, pad_offset=0.
-    #   Phase 1 fills chip 1 OLD slab cells 0..2559 with new tokens (natural
-    #     positions [2560, 5120)).
-    #   Phase 2 fills chip 0 NEW slab cells 0..2559 with new tokens (natural
-    #     positions [5120, 7680)).
-    # Per-chip input rows (in chip-local Q order):
-    #   chip 0 rows ← natural positions [5120, 7680)
-    #   chip 1 rows ← natural positions [2560, 5120)
-    # ShardTensor2dMesh splits at dim 2: first chunk_local rows → mesh row 0
-    # → chip 0. So concat in chip-order [chip 0 data, chip 1 data].
-    # ------------------------------------------------------------------------
-    iter1_h = torch.cat(
-        [
-            hidden_states_valid[:, valid_iter0 + chunk_size_local : valid_total, :],  # chip 0 = positions [5120, 7680)
-            hidden_states_valid[:, valid_iter0 : valid_iter0 + chunk_size_local, :],  # chip 1 = positions [2560, 5120)
-        ],
-        dim=1,
-    ).unsqueeze(0)
-    tt_iter1_h = _to_tt_hidden(iter1_h)
-    iter1_rope = rope_setup.get_rope_tensors_rotated(chunk_size_global=chunk_size_global, kv_actual_isl=valid_iter0)
+        tt_iter_h = _to_tt_hidden(iter_h)
+        # Rotated rope is identity at kv_actual==0, so it is used uniformly.
+        iter_rope = rope_setup.get_rope_tensors_rotated(chunk_size_global=chunk_size_global, kv_actual_isl=kv_actual)
 
-    tt_iter1_out = mla_tt.forward(
-        hidden_states=tt_iter1_h,
-        rope_tensors=iter1_rope,
-        kvpe_cache=tt_kvpe_cache,
-        kv_actual_isl=valid_iter0,
-        num_cache_layers=1,
-        chunked_q_chunk_size=q_chunk_size,
-    )
+        tt_iter_out = mla_tt.forward(
+            hidden_states=tt_iter_h,
+            rope_tensors=iter_rope,
+            kvpe_cache=tt_kvpe_cache,
+            kv_actual_isl=kv_actual,
+            num_cache_layers=1,
+            chunked_q_chunk_size=q_chunk_size,
+        )
 
-    iter1_out_host = ttnn.to_torch(
-        tt_iter1_out,
-        mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=out_concat_dims, mesh_shape=mesh_device.shape),
-    ).to(torch.bfloat16)
-    # iter1_out_host: chip 0 rows first (positions 5120..7679), chip 1 rows next
-    # (positions 2560..5119). Un-rotate into natural order [2560..7680).
-    iter1_out_natural = torch.cat(
-        [
-            iter1_out_host[:, :, chunk_size_local:, :],  # chip 1 = positions [2560, 5120)
-            iter1_out_host[:, :, :chunk_size_local, :],  # chip 0 = positions [5120, 7680)
-        ],
-        dim=2,
-    )  # [1, 1, valid_iter1, hidden_size]
-    _, msg = assert_with_pcc(
-        ref_output[:, valid_iter0:valid_total, :].unsqueeze(0),
-        iter1_out_natural,
-        0.98,
-    )
-    logger.info(f"  iter 1 (valid {valid_iter0}..{valid_total - 1}, rotated): PCC {msg}")
+        out_host = ttnn.to_torch(
+            tt_iter_out,
+            mesh_composer=ttnn.ConcatMesh2dToTensor(mesh_device, dims=out_concat_dims, mesh_shape=mesh_device.shape),
+        ).to(torch.bfloat16)
+        # Un-rotate: output row (c*chunk_local + r) holds global position flat_positions[row].
+        # Scatter the valid rows into natural order.
+        out_flat = out_host[0, 0]  # [chunk_size_global, hidden]
+        valid_pairs = [(row, gp) for row, gp in enumerate(flat_positions) if gp < valid_end]
+        src_rows = torch.tensor([row for row, _ in valid_pairs], dtype=torch.long)
+        dst_pos = torch.tensor([gp for _, gp in valid_pairs], dtype=torch.long)
+        full_out_natural[0, 0, dst_pos, :] = out_flat[src_rows, :]
 
-    ttnn.synchronize_device(mesh_device)
-    ttnn.distributed_context_barrier()
+        iter_natural = full_out_natural[:, :, kv_actual:valid_end, :]
+        _, msg = assert_with_pcc(
+            ref_output[:, kv_actual:valid_end, :].unsqueeze(0),
+            iter_natural,
+            0.98,
+        )
+        rot = "rotated" if 0 < kv_actual < chunk_size_global else "aligned"
+        logger.info(f"  iter {it} (valid {kv_actual}..{valid_end - 1}, kv_actual={kv_actual}, {rot}): PCC {msg}")
 
-    logger.success("✓ Rotated-partial chunked prefill test passed")
+        ttnn.synchronize_device(mesh_device)
+        ttnn.distributed_context_barrier()
+
+    # Full assembled-prefix correctness across all iterations.
+    _, msg = assert_with_pcc(ref_output.unsqueeze(0), full_out_natural, 0.98)
+    logger.info(f"  full prefix (0..{valid_total - 1}) output PCC {msg}")
+    logger.success(f"✓ Rotated chunked prefill test passed (valid_per_iter={valid_per_iter})")
 
 
 # sp x tp
