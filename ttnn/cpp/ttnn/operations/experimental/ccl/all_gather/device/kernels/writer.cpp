@@ -35,15 +35,18 @@ void kernel_main() {
     constexpr uint32_t packet_size = get_compile_time_arg_val(5);
     constexpr bool load_balance_across_alt_routes = get_compile_time_arg_val(6) != 0;
     constexpr uint32_t num_connections = get_compile_time_arg_val(7);
-    constexpr uint8_t line_hops = get_compile_time_arg_val(8);
-    constexpr uint8_t rect_e_hops = get_compile_time_arg_val(9);
-    constexpr uint8_t rect_w_hops = get_compile_time_arg_val(10);
-    constexpr uint8_t rect_spine_hops = get_compile_time_arg_val(11);
-    constexpr uint8_t line_hops_alt = get_compile_time_arg_val(12);
-    constexpr uint8_t rect_e_hops_alt = get_compile_time_arg_val(13);
-    constexpr uint8_t rect_w_hops_alt = get_compile_time_arg_val(14);
-    constexpr uint8_t rect_spine_hops_alt = get_compile_time_arg_val(15);
-    constexpr auto output_tensor_args = TensorAccessorArgs<16>();
+    constexpr uint8_t hop_e = get_compile_time_arg_val(8);
+    constexpr uint8_t hop_w = get_compile_time_arg_val(9);
+    constexpr uint8_t hop_n = get_compile_time_arg_val(10);
+    constexpr uint8_t hop_s = get_compile_time_arg_val(11);
+    constexpr uint8_t hop_e_alt = get_compile_time_arg_val(12);
+    constexpr uint8_t hop_w_alt = get_compile_time_arg_val(13);
+    constexpr uint8_t hop_n_alt = get_compile_time_arg_val(14);
+    constexpr uint8_t hop_s_alt = get_compile_time_arg_val(15);
+    // Only the designated axis writes this device's own slice locally (avoids a double local write
+    // when both axes are active). The local sem inc below is independent of this and stays unconditional.
+    constexpr bool do_local_write = get_compile_time_arg_val(16) != 0;
+    constexpr auto output_tensor_args = TensorAccessorArgs<17>();
 
     constexpr bool enable_fabric = (num_connections > 0);
     constexpr uint32_t outputs_per_cb_page = cb_page_size / output_page_size;
@@ -89,29 +92,17 @@ void kernel_main() {
         open_connections(fabric_connection, num_connections, arg_for_fab);
     }
 
-    // Build ranges + ranges_alt arrays.
-    // Connection order should match host: line first, then rect (only active ones are present,
-    // indexed 0..num_connections-1).
-    FabricRange ranges[2] = {};      // [0] = W-line; [1] = N-rect (Fabric_2D only)
-    FabricRange ranges_alt[2] = {};  // [0] = W-line; [1] = N-rect (Fabric_2D only)
+    // This core sends a single mcast: the {e,w,n,s} hop rectangle the host computed for it.
+    //   2D: a MeshMcastRange (N/S spine + E/W branches; a pure line just has the other fields 0).
+    //   1D: the linear API wants one hop count, and exactly one of the four fields is nonzero.
+    FabricRange ranges[1] = {};
+    FabricRange ranges_alt[1] = {};
 #ifdef FABRIC_2D
-    {
-        uint32_t idx = 0;
-        if constexpr (line_hops > 0) {
-            ranges[idx] = FabricRange{0, line_hops, 0, 0};
-            ranges_alt[idx] = FabricRange{0, line_hops_alt, 0, 0};
-            ++idx;
-        }
-        if constexpr (rect_spine_hops > 0) {
-            ranges[idx] = FabricRange{rect_e_hops, rect_w_hops, rect_spine_hops, 0};
-            ranges_alt[idx] = FabricRange{rect_e_hops_alt, rect_w_hops_alt, rect_spine_hops_alt, 0};
-            ++idx;
-        }
-    }
+    ranges[0] = FabricRange{hop_e, hop_w, hop_n, hop_s};
+    ranges_alt[0] = FabricRange{hop_e_alt, hop_w_alt, hop_n_alt, hop_s_alt};
 #else
-    // 1D: exactly one of (line_hops, rect_spine_hops) is nonzero — that's the active axis.
-    ranges[0] = (line_hops != 0) ? line_hops : rect_spine_hops;
-    ranges_alt[0] = (line_hops != 0) ? line_hops_alt : rect_spine_hops_alt;
+    ranges[0] = hop_e + hop_w + hop_n + hop_s;
+    ranges_alt[0] = hop_e_alt + hop_w_alt + hop_n_alt + hop_s_alt;
 #endif
     FabricWriter<output_page_size, packet_size, load_balance_across_alt_routes> fabric(
         noc, fabric_connection, num_connections, ranges, ranges_alt);
@@ -180,16 +171,18 @@ void kernel_main() {
                 fabric.send(l1_read_addr, fabric_tensor_page_addr);
             }
 
-            // Local write.
+            // Local write (only on the designated axis; see do_local_write).
             // For local writes use posted writes (to skip waiting for ack) on different virtual channel
             // (to avoid interfering with Fabric writes on same noc)
-            noc.async_write<Noc::TxnIdMode::DISABLED, Noc::ResponseMode::POSTED>(
-                CoreLocalMem<uint32_t>(l1_read_addr),
-                output_tensor_accessor,
-                output_page_size,
-                {},
-                {.page_id = page_id, .offset_bytes = output_page_byte_offset},
-                NOC_UNICAST_WRITE_VC + 1);
+            if constexpr (do_local_write) {
+                noc.async_write<Noc::TxnIdMode::DISABLED, Noc::ResponseMode::POSTED>(
+                    CoreLocalMem<uint32_t>(l1_read_addr),
+                    output_tensor_accessor,
+                    output_page_size,
+                    {},
+                    {.page_id = page_id, .offset_bytes = output_page_byte_offset},
+                    NOC_UNICAST_WRITE_VC + 1);
+            }
 
             l1_read_addr += output_page_size;
         }

@@ -8,15 +8,19 @@
 
 #include "ttnn/device_operation.hpp"
 
+#include <array>
+#include <vector>
+
 #include <tt-metalium/global_semaphore.hpp>
 
 namespace ttnn::experimental::prim {
 
 struct AllGatherFactory {
     struct shared_variables_t {
-        std::vector<tt::tt_metal::CoreCoord> sender_worker_cores;
-        tt::tt_metal::KernelHandle worker_sender_reader_kernel_id{};
-        tt::tt_metal::KernelHandle worker_sender_writer_kernel_id{};
+        // Indexed by mesh axis: [0] = N/S, [1] = E/W. An inactive axis has an empty core vector.
+        std::array<std::vector<tt::tt_metal::CoreCoord>, 2> sender_worker_cores;
+        std::array<tt::tt_metal::KernelHandle, 2> worker_sender_reader_kernel_id{};
+        std::array<tt::tt_metal::KernelHandle, 2> worker_sender_writer_kernel_id{};
         tt::tt_metal::GlobalSemaphore semaphore;
         tt::tt_metal::GlobalSemaphore barrier_semaphore;
         uint32_t ring_index = 0;

@@ -19,7 +19,8 @@ namespace {  // anonymous namespace for internal helpers
 
 CoreRangeSet get_cores_close_to_erisc(uint32_t num_workers, bool row_wise) {
     CoreRangeSet worker_cores;
-    std::vector<CoreRange> desired_core_range = {CoreRange({5, 3}, {6, 3}), CoreRange({2, 8}, {3, 8})};
+    std::vector<CoreRange> desired_core_range = {
+        CoreRange({5, 3}, {6, 3}), CoreRange({2, 8}, {3, 8}), CoreRange({1, 1}, {4, 4})};
     for (const auto& cr : desired_core_range) {
         auto cores = corerange_to_cores(cr, std::nullopt, row_wise);
         for (const auto& core : cores) {
@@ -176,18 +177,61 @@ AllGatherFactory::cached_program_t AllGatherFactory::create_at(
         e_coord.has_value() || w_coord.has_value() || n_coord.has_value() || s_coord.has_value(),
         "No neighboring devices");
 
-    // Get worker cores, assuming 1 worker per link
-    uint32_t num_workers_per_link = 1;
-
-    auto sender_worker_core_range =
-        get_cores_close_to_erisc(operation_attributes.num_links * num_workers_per_link, true);
-    auto sender_worker_cores = corerange_to_cores(sender_worker_core_range);
-
     const uint32_t packet_size = tt::tt_fabric::get_tt_fabric_max_payload_size_bytes();
 
-    // Kernel alternates between ranges[] and ranges_alt[] hops on every packet send.
-    // Enabled if any axis is an even-sized ring.
-    const bool load_balance_across_alt_routes = ew_load_balance || ns_load_balance;
+    auto* mesh_device = input_tensor.device();
+    const auto& num_links_per_axis = operation_attributes.num_links_per_axis;
+
+    // One worker core per link per active axis. Allocate the total up front, then split into
+    // per-axis contiguous slices (axis 0 = N/S first, then axis 1 = E/W). get_cores_close_to_erisc
+    // is deterministic and mesh-uniform, so a given (axis, link) maps to the same physical core on
+    // every device -- required for the per-core semaphore targeting below.
+    const uint32_t total_links = num_links_per_axis[0] + num_links_per_axis[1];
+    TT_FATAL(total_links > 0, "AllGather: no active fabric links on any axis");
+    auto sender_worker_core_range = get_cores_close_to_erisc(total_links, true);
+    auto all_sender_worker_cores = corerange_to_cores(sender_worker_core_range);
+
+    std::array<std::vector<CoreCoord>, 2> axis_cores;
+    {
+        uint32_t idx = 0;
+        for (uint32_t a = 0; a < 2; ++a) {
+            for (uint32_t l = 0; l < num_links_per_axis[a]; ++l) {
+                axis_cores[a].push_back(all_sender_worker_cores[idx++]);
+            }
+        }
+    }
+
+    // axis 0 (N/S) is the rect (S/N spine + E/W branches); axis 1 (E/W) is a pure line. In a 1D run
+    // only one axis is active (the N/S rect degenerates to a line because its E/W branch hops are 0).
+    const uint32_t size0 = ::ttnn::ccl::get_topological_dimension(input_tensor, 0);
+    const uint32_t size1 = ::ttnn::ccl::get_topological_dimension(input_tensor, 1);
+    const bool both_active = num_links_per_axis[0] > 0 && num_links_per_axis[1] > 0;
+
+    // Devices reached by one core's fwd+bwd mcast. axis 0 N/S rect: all other rows x full width
+    // (or a pure N/S line when E/W inactive). axis 1 E/W line: my row. They sum to num_devices-1.
+    auto coverage_of = [&](uint32_t a) -> uint32_t {
+        return (a == 0) ? (size0 - 1) * (both_active ? size1 : 1) : (size1 - 1);
+    };
+
+    // Alternate-route hops: on an even ring, fwd/bwd swap to balance the two routes.
+    const uint32_t e_alt = ew_load_balance ? w_hops : e_hops;
+    const uint32_t w_alt = ew_load_balance ? e_hops : w_hops;
+    const uint32_t s_alt = ns_load_balance ? n_hops : s_hops;
+    const uint32_t n_alt = ns_load_balance ? s_hops : n_hops;
+
+    // Any active axis does the local write of this device's own slice; its per-link partition is
+    // complete, so all local pages are covered exactly once (avoids a double local write in 2D).
+    const uint32_t local_write_axis = (num_links_per_axis[0] > 0) ? 0 : 1;
+
+    // out_ready fan-in at the single global drain core (link 0 of the first active axis):
+    //   sum over axes of coverage(axis)*links(axis)   (remote mcast hits)
+    //   + 2*links(axis)                               (local incs: reader + writer per core).
+    uint32_t out_ready_sem_wait_value = 0;
+    for (uint32_t a = 0; a < 2; ++a) {
+        out_ready_sem_wait_value += (coverage_of(a) + 2) * num_links_per_axis[a];
+    }
+    const CoreCoord global_first_core = all_sender_worker_cores[0];
+    const CoreCoord drain_sync_core = mesh_device->worker_core_from_logical_core(global_first_core);
 
     ////////////////////////////////////////////////////////////////
     // Page indexing
@@ -295,200 +339,215 @@ AllGatherFactory::cached_program_t AllGatherFactory::create_at(
 
     CreateCircularBuffer(program, sender_worker_core_range, cb_src0_config);
 
-    // KERNEL CREATION
-    // Reader (covers forward directions E-line + S-rect)
-    std::vector<uint32_t> reader_compile_args = {
-        cb0_id,                             // cb0_id
-        input_page_size,                    // input tensor page size
-        kernel_output_page_size,            // kernel-visible page size = min(input, output)
-        output_pages_per_stripe,            // stripe length (writes before a stripe jump)
-        output_page_stripe_jump,            // value added to page_id at stripe boundary
-        cb_page_size,                       // cb entry size
-        packet_size,                        // packet_size
-        load_balance_across_alt_routes,     // load_balance_across_alt_routes
-        (e_hops > 0) + (s_hops > 0),        // num_connections
-        e_hops,                             // line_hops
-        e_hops,                             // rect_e_hops
-        w_hops,                             // rect_w_hops
-        s_hops,                             // rect_spine_hops
-        ew_load_balance ? w_hops : e_hops,  // line_hops_alt
-        ew_load_balance ? w_hops : e_hops,  // rect_e_hops_alt
-        ew_load_balance ? e_hops : w_hops,  // rect_w_hops_alt
-        ns_load_balance ? n_hops : s_hops,  // rect_spine_hops_alt
-    };
-    tt::tt_metal::TensorAccessorArgs(input_tensor.buffer()).append_to(reader_compile_args);
-    tt::tt_metal::TensorAccessorArgs(output_tensor.buffer()).append_to(reader_compile_args);
+    // KERNEL CREATION + RUNTIME ARGS -- one (reader, writer) pair per active axis.
+    // axis 0 = N/S rect (reader S-spine, writer N-spine; both branch full-width E/W).
+    // axis 1 = E/W line (reader E, writer W). Same kernel source, different compile args.
+    // Each kernel sends a single mcast described by its {e,w,n,s} hop rectangle.
+    std::array<tt::tt_metal::KernelHandle, 2> reader_kernel_ids{};
+    std::array<tt::tt_metal::KernelHandle, 2> writer_kernel_ids{};
+    const auto sender_fabric_node_id = mesh_device->get_fabric_node_id(sender_device_coord);
 
-    // Writer (covers backward directions W-line + N-rect)
-    std::vector<uint32_t> writer_compile_args = {
-        cb0_id,                             // cb0_id
-        kernel_output_page_size,            // kernel-visible page size = min(input, output)
-        output_pages_per_stripe,            // stripe length (writes before a stripe jump)
-        output_page_stripe_jump,            // value added to page_id at stripe boundary
-        cb_page_size,                       // cb entry size
-        packet_size,                        // packet_size
-        load_balance_across_alt_routes,     // load_balance_across_alt_routes
-        (w_hops > 0) + (n_hops > 0),        // num_connections
-        w_hops,                             // line_hops
-        e_hops,                             // rect_e_hops
-        w_hops,                             // rect_w_hops
-        n_hops,                             // rect_spine_hops
-        ew_load_balance ? e_hops : w_hops,  // line_hops_alt
-        ew_load_balance ? w_hops : e_hops,  // rect_e_hops_alt
-        ew_load_balance ? e_hops : w_hops,  // rect_w_hops_alt
-        ns_load_balance ? s_hops : n_hops,  // rect_spine_hops_alt
-    };
-    tt::tt_metal::TensorAccessorArgs(output_tensor.buffer()).append_to(writer_compile_args);
-
-    auto worker_sender_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/experimental/ccl/all_gather/device/kernels/reader.cpp",
-        sender_worker_core_range,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
-
-    // Writer
-    auto worker_sender_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/experimental/ccl/all_gather/device/kernels/writer.cpp",
-        sender_worker_core_range,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
-
-    // Kernel Runtime Args
-    CoreCoord drain_sync_core;  // the first worker of each chip is the drain sync core, which contains the output ready
-                                // semaphore
-    auto* mesh_device = input_tensor.device();
-    CoreCoord barrier_core;
-    for (uint32_t link = 0; link < operation_attributes.num_links; link++) {
-        CoreCoord core = sender_worker_cores[link];
-        if (link == 0) {
-            // drain sync core is the first worker core
-            drain_sync_core = mesh_device->worker_core_from_logical_core(core);
+    for (uint32_t a = 0; a < 2; ++a) {
+        const uint32_t n_links = num_links_per_axis[a];
+        if (n_links == 0) {
+            continue;
         }
 
-        barrier_core = mesh_device->worker_core_from_logical_core(core);
+        // The {e,w,n,s} hop rectangle for this axis's reader (fwd) and writer (bwd) mcasts.
+        // axis 0 N/S: S/N spine with full E/W branches (e/w are 0 when E/W inactive => pure N/S line).
+        // axis 1 E/W: pure line (no spine -- E/W cannot be a spine in the fabric).
+        std::array<uint32_t, 4> reader_rect{}, reader_rect_alt{}, writer_rect{}, writer_rect_alt{};
+        std::optional<MeshCoordinate> fwd_coord, bwd_coord;
+        uint32_t fwd_hop = 0, bwd_hop = 0, coverage = 0;
+        bool load_balance = false;
+        if (a == 0) {  // N/S rect
+            reader_rect = {e_hops, w_hops, 0, s_hops};
+            reader_rect_alt = {e_alt, w_alt, 0, s_alt};
+            writer_rect = {e_hops, w_hops, n_hops, 0};
+            writer_rect_alt = {e_alt, w_alt, n_alt, 0};
+            fwd_coord = s_coord;
+            bwd_coord = n_coord;
+            fwd_hop = s_hops;
+            bwd_hop = n_hops;
+            coverage = coverage_of(0);
+            load_balance = ns_load_balance || ew_load_balance;
+        } else {  // E/W line
+            reader_rect = {e_hops, 0, 0, 0};
+            reader_rect_alt = {e_alt, 0, 0, 0};
+            writer_rect = {0, w_hops, 0, 0};
+            writer_rect_alt = {0, w_alt, 0, 0};
+            fwd_coord = e_coord;
+            bwd_coord = w_coord;
+            fwd_hop = e_hops;
+            bwd_hop = w_hops;
+            coverage = coverage_of(1);
+            load_balance = ew_load_balance;
+        }
+        const bool do_local_write = (a == local_write_axis);
 
-        // Set runtime args
-        uint32_t input_pages_per_link = num_input_pages / operation_attributes.num_links;
-        uint32_t remainder = num_input_pages % operation_attributes.num_links;
-        uint32_t input_tile_id_start = (link * input_pages_per_link) + std::min(link, remainder);
-        uint32_t input_tile_id_end = ((link + 1) * input_pages_per_link) + std::min(link + 1, remainder);
-
-        // Map this worker's slice of input pages to its slice of output writes.
-        // num_output_pages already accounts for split_factor, so in matched/concat
-        // modes the ratio cancels back to num_input_pages.
-        uint32_t local_output_start = (input_tile_id_start * num_output_pages) / num_input_pages;
-        uint32_t local_output_end = (input_tile_id_end * num_output_pages) / num_input_pages;
-        uint32_t num_worker_output_pages = local_output_end - local_output_start;
-        // Map local write index -> global output page id of this device's first write:
-        //     stripe_index           = local / output_pages_per_stripe
-        //     position_in_stripe     = local % output_pages_per_stripe
-        //     output_page_id_start   = stripe_index * output_page_stripe_distance
-        //                            + device_slot * output_pages_per_stripe
-        //                            + position_in_stripe
-        // Concat with concat_factor=N collapses naturally (stripe_distance=1, device_slot=0).
-        uint32_t output_page_id_start = (local_output_start / output_pages_per_stripe) * output_page_stripe_distance +
-                                        device_slot * output_pages_per_stripe +
-                                        local_output_start % output_pages_per_stripe;
-        uint32_t output_page_in_stripe_start = local_output_start % output_pages_per_stripe;
-
-        // Reader of first worker is the sole owner of both global semaphores: it fires its forward sem
-        // contributions, then waits + resets. Writer just fires + local-incs its backward sem contributions.
-        bool owns_out_ready_sem = (link == 0);
-        // Per-link barrier fan-in = N-1 in every case. Every other chip sends me one atomic_inc:
-        //   1D: e_hops + w_hops (or n_hops + s_hops) along the active axis = axis_size - 1.
-        //   2D: every chip in the mesh outside me is covered by exactly one of the 4 mcast packets.
-        // Both equal num_devices - 1.
-        uint32_t barrier_wait_value = num_devices - 1;
-        // Per-link out_ready fan-in at link-0 drain_sync_core:
-        //   num_links * (N-1 remote mcast hits + 2 local incs from reader and writer).
-        uint32_t out_ready_sem_wait_value = operation_attributes.num_links * (num_devices + 1);
-
-        std::vector<uint32_t> reader_rt_args = {
-            input_tensor.buffer()->address(),   // input tensor address
-            output_tensor.buffer()->address(),  // output tensor address
-            semaphore.address(),                // out_ready_sem_bank_addr (absolute address)
-            barrier_semaphore.address(),        // barrier_sem
-            input_tile_id_start,                // input_page_id_start
-            input_tile_id_end,                  // input_page_id_end
-            output_page_id_start,               // output page start
-            output_page_in_stripe_start,        // initial position within stripe
-            output_page_byte_offset,            // byte offset within output page (nonzero only in page-concat)
-            num_worker_output_pages,            // number of output pages for this worker
-            device_idx,                         // this device's index
-            owns_out_ready_sem,                 // owns_out_ready_sem (wait+reset)
-            drain_sync_core.x,                  // out_ready_sem_noc0_x
-            drain_sync_core.y,                  // out_ready_sem_noc0_y
-            out_ready_sem_wait_value,           // out_ready_sem_wait_value
-            barrier_core.x,                     // barrier_sem_noc0_x
-            barrier_core.y,                     // barrier_sem_noc0_y
-            barrier_wait_value,                 // barrier_wait_value
+        std::vector<uint32_t> reader_compile_args = {
+            cb0_id,                   // cb0_id
+            input_page_size,          // input tensor page size
+            kernel_output_page_size,  // kernel-visible page size
+            output_pages_per_stripe,  // stripe length
+            output_page_stripe_jump,  // stripe jump
+            cb_page_size,             // cb entry size
+            packet_size,              // packet_size
+            load_balance,             // load_balance_across_alt_routes
+            (fwd_hop > 0),            // num_connections
+            reader_rect[0],
+            reader_rect[1],
+            reader_rect[2],
+            reader_rect[3],  // hop_{e,w,n,s}
+            reader_rect_alt[0],
+            reader_rect_alt[1],
+            reader_rect_alt[2],
+            reader_rect_alt[3],  // hop_{e,w,n,s}_alt
         };
-        const auto sender_fabric_node_id = mesh_device->get_fabric_node_id(sender_device_coord);
-        // Reader: E first, then S. Order must match the kernel's ranges[] construction
-        // (which packs E-line into slot 0, S-rect into slot 1 when both are active).
-        std::vector<tt::tt_fabric::FabricNodeId> reader_dst_nodes;
-        if (e_hops > 0 && e_coord.has_value()) {
-            reader_dst_nodes.push_back(mesh_device->get_fabric_node_id(*e_coord));
-        }
-        if (s_hops > 0 && s_coord.has_value()) {
-            reader_dst_nodes.push_back(mesh_device->get_fabric_node_id(*s_coord));
-        }
-        if (!reader_dst_nodes.empty()) {
-            append_routing_plane_connection_manager_rt_args(
-                sender_fabric_node_id,
-                reader_dst_nodes,
-                {link},
-                program,
-                worker_sender_reader_kernel_id,
-                {core},
-                reader_rt_args,
-                fabric_is_2d ? tt::tt_fabric::FabricApiType::Mesh : tt::tt_fabric::FabricApiType::Linear);
-        }
+        tt::tt_metal::TensorAccessorArgs(input_tensor.buffer()).append_to(reader_compile_args);
+        tt::tt_metal::TensorAccessorArgs(output_tensor.buffer()).append_to(reader_compile_args);
 
-        std::vector<uint32_t> writer_rt_args = {
-            output_tensor.buffer()->address(),  // output tensor address
-            semaphore.address(),                // out_ready_sem_bank_addr (absolute address)
-            barrier_semaphore.address(),        // barrier_sem
-            output_page_id_start,               // output page start
-            output_page_in_stripe_start,        // initial position within stripe
-            output_page_byte_offset,            // byte offset within output page (nonzero only in page-concat)
-            num_worker_output_pages,            // number of output pages for this worker
-            device_idx,                         // this device's index
-            drain_sync_core.x,                  // out_ready_sem_noc0_x
-            drain_sync_core.y,                  // out_ready_sem_noc0_y
-            barrier_core.x,                     // barrier_sem_noc0_x
-            barrier_core.y,                     // barrier_sem_noc0_y
+        std::vector<uint32_t> writer_compile_args = {
+            cb0_id,                   // cb0_id
+            kernel_output_page_size,  // kernel-visible page size
+            output_pages_per_stripe,  // stripe length
+            output_page_stripe_jump,  // stripe jump
+            cb_page_size,             // cb entry size
+            packet_size,              // packet_size
+            load_balance,             // load_balance_across_alt_routes
+            (bwd_hop > 0),            // num_connections
+            writer_rect[0],
+            writer_rect[1],
+            writer_rect[2],
+            writer_rect[3],  // hop_{e,w,n,s}
+            writer_rect_alt[0],
+            writer_rect_alt[1],
+            writer_rect_alt[2],
+            writer_rect_alt[3],  // hop_{e,w,n,s}_alt
+            do_local_write,      // do_local_write
         };
+        tt::tt_metal::TensorAccessorArgs(output_tensor.buffer()).append_to(writer_compile_args);
 
-        // Writer: W first, then N. Order must match the kernel's ranges[] construction
-        // (which packs W-line into slot 0, N-rect into slot 1 when both are active).
-        std::vector<tt::tt_fabric::FabricNodeId> writer_dst_nodes;
-        if (w_hops > 0 && w_coord.has_value()) {
-            writer_dst_nodes.push_back(mesh_device->get_fabric_node_id(*w_coord));
+        const auto& cores = axis_cores[a];
+        std::vector<CoreRange> axis_core_ranges;
+        axis_core_ranges.reserve(cores.size());
+        for (const auto& c : cores) {
+            axis_core_ranges.emplace_back(c, c);
         }
-        if (n_hops > 0 && n_coord.has_value()) {
-            writer_dst_nodes.push_back(mesh_device->get_fabric_node_id(*n_coord));
-        }
-        if (!writer_dst_nodes.empty()) {
-            append_routing_plane_connection_manager_rt_args(
-                sender_fabric_node_id,
-                writer_dst_nodes,
-                {link},
-                program,
-                worker_sender_writer_kernel_id,
-                {core},
-                writer_rt_args,
-                fabric_is_2d ? tt::tt_fabric::FabricApiType::Mesh : tt::tt_fabric::FabricApiType::Linear);
-        }
+        CoreRangeSet axis_core_range_set(axis_core_ranges);
 
-        tt::tt_metal::SetRuntimeArgs(program, worker_sender_reader_kernel_id, {core}, reader_rt_args);
-        tt::tt_metal::SetRuntimeArgs(program, worker_sender_writer_kernel_id, {core}, writer_rt_args);
+        reader_kernel_ids[a] = tt::tt_metal::CreateKernel(
+            program,
+            "ttnn/cpp/ttnn/operations/experimental/ccl/all_gather/device/kernels/reader.cpp",
+            axis_core_range_set,
+            tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
+        writer_kernel_ids[a] = tt::tt_metal::CreateKernel(
+            program,
+            "ttnn/cpp/ttnn/operations/experimental/ccl/all_gather/device/kernels/writer.cpp",
+            axis_core_range_set,
+            tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
+
+        for (uint32_t link = 0; link < n_links; ++link) {
+            const CoreCoord core = cores[link];
+            const CoreCoord barrier_core = mesh_device->worker_core_from_logical_core(core);
+
+            // Split this device's input pages across this axis's links and map to output writes.
+            // num_output_pages already accounts for split_factor, so in matched/concat modes the
+            // ratio cancels back to num_input_pages.
+            const uint32_t input_pages_per_link = num_input_pages / n_links;
+            const uint32_t remainder = num_input_pages % n_links;
+            const uint32_t input_tile_id_start = (link * input_pages_per_link) + std::min(link, remainder);
+            const uint32_t input_tile_id_end = ((link + 1) * input_pages_per_link) + std::min(link + 1, remainder);
+            const uint32_t local_output_start = (input_tile_id_start * num_output_pages) / num_input_pages;
+            const uint32_t local_output_end = (input_tile_id_end * num_output_pages) / num_input_pages;
+            const uint32_t num_worker_output_pages = local_output_end - local_output_start;
+            // stripe_index*stripe_distance + device_slot*pages_per_stripe + position_in_stripe.
+            const uint32_t output_page_id_start =
+                (local_output_start / output_pages_per_stripe) * output_page_stripe_distance +
+                device_slot * output_pages_per_stripe + local_output_start % output_pages_per_stripe;
+            const uint32_t output_page_in_stripe_start = local_output_start % output_pages_per_stripe;
+
+            // Single global drain core (link 0 of the first active axis) owns the out_ready wait+reset.
+            const bool owns_out_ready_sem = (core == global_first_core);
+            // Per-core barrier fan-in = this core's mcast coverage (a core only writes where it
+            // mcasts, so it only needs those targets ready). Sums to num_devices-1 across axes.
+            const uint32_t barrier_wait_value = coverage;
+
+            std::vector<uint32_t> reader_rt_args = {
+                input_tensor.buffer()->address(),   // input tensor address
+                output_tensor.buffer()->address(),  // output tensor address
+                semaphore.address(),                // out_ready_sem_bank_addr (absolute address)
+                barrier_semaphore.address(),        // barrier_sem
+                input_tile_id_start,                // input_page_id_start
+                input_tile_id_end,                  // input_page_id_end
+                output_page_id_start,               // output page start
+                output_page_in_stripe_start,        // initial position within stripe
+                output_page_byte_offset,            // byte offset within output page (nonzero only in page-concat)
+                num_worker_output_pages,            // number of output pages for this worker
+                device_idx,                         // this device's index
+                owns_out_ready_sem,                 // owns_out_ready_sem (wait+reset)
+                drain_sync_core.x,                  // out_ready_sem_noc0_x
+                drain_sync_core.y,                  // out_ready_sem_noc0_y
+                out_ready_sem_wait_value,           // out_ready_sem_wait_value
+                barrier_core.x,                     // barrier_sem_noc0_x
+                barrier_core.y,                     // barrier_sem_noc0_y
+                barrier_wait_value,                 // barrier_wait_value
+            };
+            std::vector<tt::tt_fabric::FabricNodeId> reader_dst_nodes;
+            if (fwd_hop > 0 && fwd_coord.has_value()) {
+                reader_dst_nodes.push_back(mesh_device->get_fabric_node_id(*fwd_coord));
+            }
+            if (!reader_dst_nodes.empty()) {
+                append_routing_plane_connection_manager_rt_args(
+                    sender_fabric_node_id,
+                    reader_dst_nodes,
+                    {link},
+                    program,
+                    reader_kernel_ids[a],
+                    {core},
+                    reader_rt_args,
+                    fabric_is_2d ? tt::tt_fabric::FabricApiType::Mesh : tt::tt_fabric::FabricApiType::Linear);
+            }
+
+            std::vector<uint32_t> writer_rt_args = {
+                output_tensor.buffer()->address(),  // output tensor address
+                semaphore.address(),                // out_ready_sem_bank_addr (absolute address)
+                barrier_semaphore.address(),        // barrier_sem
+                output_page_id_start,               // output page start
+                output_page_in_stripe_start,        // initial position within stripe
+                output_page_byte_offset,            // byte offset within output page (nonzero only in page-concat)
+                num_worker_output_pages,            // number of output pages for this worker
+                device_idx,                         // this device's index
+                drain_sync_core.x,                  // out_ready_sem_noc0_x
+                drain_sync_core.y,                  // out_ready_sem_noc0_y
+                barrier_core.x,                     // barrier_sem_noc0_x
+                barrier_core.y,                     // barrier_sem_noc0_y
+            };
+            std::vector<tt::tt_fabric::FabricNodeId> writer_dst_nodes;
+            if (bwd_hop > 0 && bwd_coord.has_value()) {
+                writer_dst_nodes.push_back(mesh_device->get_fabric_node_id(*bwd_coord));
+            }
+            if (!writer_dst_nodes.empty()) {
+                append_routing_plane_connection_manager_rt_args(
+                    sender_fabric_node_id,
+                    writer_dst_nodes,
+                    {link},
+                    program,
+                    writer_kernel_ids[a],
+                    {core},
+                    writer_rt_args,
+                    fabric_is_2d ? tt::tt_fabric::FabricApiType::Mesh : tt::tt_fabric::FabricApiType::Linear);
+            }
+
+            tt::tt_metal::SetRuntimeArgs(program, reader_kernel_ids[a], {core}, reader_rt_args);
+            tt::tt_metal::SetRuntimeArgs(program, writer_kernel_ids[a], {core}, writer_rt_args);
+        }
     }
 
     shared_variables_t shared_variables{
-        .sender_worker_cores = sender_worker_cores,
-        .worker_sender_reader_kernel_id = worker_sender_reader_kernel_id,
-        .worker_sender_writer_kernel_id = worker_sender_writer_kernel_id,
+        .sender_worker_cores = axis_cores,
+        .worker_sender_reader_kernel_id = reader_kernel_ids,
+        .worker_sender_writer_kernel_id = writer_kernel_ids,
         .semaphore = semaphore,
         .barrier_semaphore = barrier_semaphore,
         .ring_index = device_idx,
@@ -507,23 +566,25 @@ void AllGatherFactory::override_runtime_arguments(
 
         log_trace(tt::LogOp, "DEBUG: semaphore: {}", shared_vars.semaphore.address());
         log_trace(tt::LogOp, "DEBUG: barrier_semaphore: {}", shared_vars.barrier_semaphore.address());
-        auto& worker_reader_sender_runtime_args_by_core =
-            GetRuntimeArgs(program, shared_vars.worker_sender_reader_kernel_id);
-        auto& worker_writer_sender_runtime_args_by_core =
-            GetRuntimeArgs(program, shared_vars.worker_sender_writer_kernel_id);
-
-        for (const auto& core : shared_vars.sender_worker_cores) {
-            // reader: [0]=input_addr, [1]=output_addr, [2]=out_ready_sem, [3]=barrier_sem
-            auto& worker_reader_sender_runtime_args = worker_reader_sender_runtime_args_by_core[core.x][core.y];
-            worker_reader_sender_runtime_args[0] = tensor_args.input_tensor.buffer()->address();
-            worker_reader_sender_runtime_args[1] = output_tensor.buffer()->address();
-            worker_reader_sender_runtime_args[2] = shared_vars.semaphore.address();
-            worker_reader_sender_runtime_args[3] = shared_vars.barrier_semaphore.address();
-            // writer: [0]=output_addr, [1]=out_ready_sem, [2]=barrier_sem
-            auto& worker_writer_sender_runtime_args = worker_writer_sender_runtime_args_by_core[core.x][core.y];
-            worker_writer_sender_runtime_args[0] = output_tensor.buffer()->address();
-            worker_writer_sender_runtime_args[1] = shared_vars.semaphore.address();
-            worker_writer_sender_runtime_args[2] = shared_vars.barrier_semaphore.address();
+        for (uint32_t a = 0; a < 2; ++a) {
+            if (shared_vars.sender_worker_cores[a].empty()) {
+                continue;
+            }
+            auto& reader_args_by_core = GetRuntimeArgs(program, shared_vars.worker_sender_reader_kernel_id[a]);
+            auto& writer_args_by_core = GetRuntimeArgs(program, shared_vars.worker_sender_writer_kernel_id[a]);
+            for (const auto& core : shared_vars.sender_worker_cores[a]) {
+                // reader: [0]=input_addr, [1]=output_addr, [2]=out_ready_sem, [3]=barrier_sem
+                auto& reader_args = reader_args_by_core[core.x][core.y];
+                reader_args[0] = tensor_args.input_tensor.buffer()->address();
+                reader_args[1] = output_tensor.buffer()->address();
+                reader_args[2] = shared_vars.semaphore.address();
+                reader_args[3] = shared_vars.barrier_semaphore.address();
+                // writer: [0]=output_addr, [1]=out_ready_sem, [2]=barrier_sem
+                auto& writer_args = writer_args_by_core[core.x][core.y];
+                writer_args[0] = output_tensor.buffer()->address();
+                writer_args[1] = shared_vars.semaphore.address();
+                writer_args[2] = shared_vars.barrier_semaphore.address();
+            }
         }
     }
 }

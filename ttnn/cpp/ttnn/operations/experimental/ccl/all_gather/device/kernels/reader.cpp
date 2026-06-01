@@ -35,14 +35,14 @@ void kernel_main() {
     constexpr uint32_t packet_size = get_compile_time_arg_val(6);
     constexpr bool load_balance_across_alt_routes = get_compile_time_arg_val(7) != 0;
     constexpr uint32_t num_connections = get_compile_time_arg_val(8);
-    constexpr uint8_t line_hops = get_compile_time_arg_val(9);
-    constexpr uint8_t rect_e_hops = get_compile_time_arg_val(10);
-    constexpr uint8_t rect_w_hops = get_compile_time_arg_val(11);
-    constexpr uint8_t rect_spine_hops = get_compile_time_arg_val(12);
-    constexpr uint8_t line_hops_alt = get_compile_time_arg_val(13);
-    constexpr uint8_t rect_e_hops_alt = get_compile_time_arg_val(14);
-    constexpr uint8_t rect_w_hops_alt = get_compile_time_arg_val(15);
-    constexpr uint8_t rect_spine_hops_alt = get_compile_time_arg_val(16);
+    constexpr uint8_t hop_e = get_compile_time_arg_val(9);
+    constexpr uint8_t hop_w = get_compile_time_arg_val(10);
+    constexpr uint8_t hop_n = get_compile_time_arg_val(11);
+    constexpr uint8_t hop_s = get_compile_time_arg_val(12);
+    constexpr uint8_t hop_e_alt = get_compile_time_arg_val(13);
+    constexpr uint8_t hop_w_alt = get_compile_time_arg_val(14);
+    constexpr uint8_t hop_n_alt = get_compile_time_arg_val(15);
+    constexpr uint8_t hop_s_alt = get_compile_time_arg_val(16);
     constexpr auto input_tensor_args = TensorAccessorArgs<17>();
     constexpr auto output_tensor_args = TensorAccessorArgs<input_tensor_args.next_compile_time_args_offset()>();
 
@@ -90,29 +90,17 @@ void kernel_main() {
         open_connections(fabric_connection, num_connections, arg_for_fab);
     }
 
-    // Build ranges + ranges_alt arrays.
-    // Connection order should match host: line first, then rect (only active ones are present,
-    // indexed 0..num_connections-1).
-    FabricRange ranges[2] = {};      // [0] = E-line, [1] = S-rect (Fabric_2D only)
-    FabricRange ranges_alt[2] = {};  // [0] = E-line, [1] = S-rect (Fabric_2D only)
+    // This core sends a single mcast: the {e,w,n,s} hop rectangle the host computed for it.
+    //   2D: a MeshMcastRange (N/S spine + E/W branches; a pure line just has the other fields 0).
+    //   1D: the linear API wants one hop count, and exactly one of the four fields is nonzero.
+    FabricRange ranges[1] = {};
+    FabricRange ranges_alt[1] = {};
 #ifdef FABRIC_2D
-    {
-        uint32_t idx = 0;
-        if constexpr (line_hops > 0) {
-            ranges[idx] = FabricRange{line_hops, 0, 0, 0};
-            ranges_alt[idx] = FabricRange{line_hops_alt, 0, 0, 0};
-            ++idx;
-        }
-        if constexpr (rect_spine_hops > 0) {
-            ranges[idx] = FabricRange{rect_e_hops, rect_w_hops, 0, rect_spine_hops};
-            ranges_alt[idx] = FabricRange{rect_e_hops_alt, rect_w_hops_alt, 0, rect_spine_hops_alt};
-            ++idx;
-        }
-    }
+    ranges[0] = FabricRange{hop_e, hop_w, hop_n, hop_s};
+    ranges_alt[0] = FabricRange{hop_e_alt, hop_w_alt, hop_n_alt, hop_s_alt};
 #else
-    // 1D: exactly one of (line_hops, rect_spine_hops) is nonzero — that's the active axis.
-    ranges[0] = (line_hops != 0) ? line_hops : rect_spine_hops;
-    ranges_alt[0] = (line_hops != 0) ? line_hops_alt : rect_spine_hops_alt;
+    ranges[0] = hop_e + hop_w + hop_n + hop_s;
+    ranges_alt[0] = hop_e_alt + hop_w_alt + hop_n_alt + hop_s_alt;
 #endif
     FabricWriter<output_page_size, packet_size, load_balance_across_alt_routes> fabric(
         noc, fabric_connection, num_connections, ranges, ranges_alt);

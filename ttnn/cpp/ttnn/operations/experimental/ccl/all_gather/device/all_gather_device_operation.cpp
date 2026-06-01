@@ -183,7 +183,8 @@ ttsl::hash::hash_t AllGatherDeviceOperation::compute_program_hash(
 
     return tt::tt_metal::operation::hash_operation<AllGatherDeviceOperation>(
         args.dim,
-        args.num_links,
+        args.num_links_per_axis[0],
+        args.num_links_per_axis[1],
         args.ring_size,
         args.output_mem_config,
         args.topology,
@@ -245,7 +246,8 @@ AllGatherDeviceOperation::create_op_performance_model(
     const uint64_t input_size_bytes = input_tensor.physical_volume() * input_tensor.element_size();
 
     const uint32_t N = args.ring_size;
-    const uint32_t num_links = args.num_links;
+    // TODO: proper 2D roofline. For now use the total links across both axes as the aggregate.
+    const uint32_t num_links = args.num_links_per_axis[0] + args.num_links_per_axis[1];
     double fabric_time_ns = 0.0f;
     if (N <= 1) {
         // Single device: no fabric communication
@@ -311,7 +313,18 @@ std::tuple<AllGatherParams, AllGatherInputs> all_gather_build_operation_args(
     // Query the machine and Fabric setup
     auto* mesh_device = input_tensor.device();
     TT_FATAL(mesh_device != nullptr, "Input tensor should be on device for all_gather operation");
-    uint32_t num_links = ttnn::operations::ccl::common::get_num_links(*mesh_device, cluster_axis);
+
+    // Fabric links (routing planes) per mesh axis: [0] = N/S, [1] = E/W. Query only active axes
+    // (get_num_links TT_FATALs when an axis has no links). An axis is active if its extent > 1 and
+    // it is not excluded by cluster_axis.
+    const auto mesh_shape = mesh_device->shape();
+    std::array<uint32_t, 2> num_links_per_axis = {0, 0};
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+        const bool active = mesh_shape[axis] > 1 && (!cluster_axis.has_value() || cluster_axis.value() == axis);
+        if (active) {
+            num_links_per_axis[axis] = ttnn::operations::ccl::common::get_num_links(*mesh_device, axis);
+        }
+    }
     auto topology = ::ttnn::ccl::get_usable_topology(input_tensor, std::nullopt, cluster_axis);
     uint32_t num_devices = ttnn::ccl::get_topological_dimension(input_tensor, cluster_axis);
 
@@ -322,7 +335,7 @@ std::tuple<AllGatherParams, AllGatherInputs> all_gather_build_operation_args(
     return {
         AllGatherParams(
             gather_dim,
-            num_links,
+            num_links_per_axis,
             num_devices,
             memory_config.value_or(input_tensor.memory_config()),
             topology,
